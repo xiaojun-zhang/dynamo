@@ -9,6 +9,7 @@ use crate::engine::{AsyncEngine, AsyncEngineContextProvider, Data};
 use crate::error::{DynamoError, ErrorType};
 use crate::logging::inject_trace_headers_into_map;
 use crate::pipeline::network::ConnectionInfo;
+use crate::pipeline::network::NetworkStreamBatch;
 use crate::pipeline::network::NetworkStreamWrapper;
 use crate::pipeline::network::PendingConnections;
 use crate::pipeline::network::StreamOptions;
@@ -21,7 +22,7 @@ use crate::protocols::maybe_error::MaybeError;
 use anyhow::{Error, Result};
 use serde::Deserialize;
 use serde::Serialize;
-use tokio_stream::{StreamExt, StreamNotifyClose, wrappers::ReceiverStream};
+use tokio_stream::StreamExt;
 use tracing::Instrument;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,60 +180,68 @@ where
             .map_err(|_| PipelineError::DetachedStreamReceiver)?
             .map_err(PipelineError::ConnectionFailed)?;
 
-        // TODO: Detect end-of-stream using Server-Sent Events (SSE)
-        let mut is_complete_final = false;
-        let stream = tokio_stream::StreamNotifyClose::new(
-            tokio_stream::wrappers::ReceiverStream::new(response_stream.rx),
-        )
-        .filter_map(move |res| {
-            if let Some(res_bytes) = res {
-                if is_complete_final {
-                    let err = DynamoError::msg(
-                        "Response received after generation ended - this should never happen",
-                    );
-                    return Some(U::from_err(err));
-                }
-                match serde_json::from_slice::<NetworkStreamWrapper<U>>(&res_bytes) {
-                    Ok(item) => {
-                        is_complete_final = item.complete_final;
-                        if let Some(data) = item.data {
-                            Some(data)
-                        } else if is_complete_final {
-                            None
-                        } else {
-                            let err = DynamoError::msg(
-                                "Empty response received - this should never happen",
-                            );
-                            Some(U::from_err(err))
+        // Handles both batched (NetworkStreamBatch) and single (NetworkStreamWrapper) messages
+        // for backward compatibility. Batched messages yield multiple items per frame.
+        let stream = async_stream::stream! {
+            let mut is_complete_final = false;
+            let mut rx_stream = tokio_stream::StreamNotifyClose::new(
+                tokio_stream::wrappers::ReceiverStream::new(response_stream.rx),
+            );
+            while let Some(res) = rx_stream.next().await {
+                if let Some(res_bytes) = res {
+                    if is_complete_final {
+                        yield U::from_err(DynamoError::msg(
+                            "Response received after generation ended - this should never happen",
+                        ));
+                        continue;
+                    }
+                    // Try batch format first (more common in new code path)
+                    if let Ok(batch) = serde_json::from_slice::<NetworkStreamBatch<U>>(&res_bytes) {
+                        is_complete_final = batch.complete_final;
+                        for item in batch.items {
+                            yield item;
+                        }
+                        if is_complete_final {
+                            break;
+                        }
+                    } else {
+                        // Fall back to single-item format for backward compatibility
+                        match serde_json::from_slice::<NetworkStreamWrapper<U>>(&res_bytes) {
+                            Ok(item) => {
+                                is_complete_final = item.complete_final;
+                                if let Some(data) = item.data {
+                                    yield data;
+                                } else if is_complete_final {
+                                    break;
+                                } else {
+                                    yield U::from_err(DynamoError::msg(
+                                        "Empty response received - this should never happen",
+                                    ));
+                                }
+                            }
+                            Err(err) => {
+                                let json_str = String::from_utf8_lossy(&res_bytes);
+                                tracing::warn!(%err, %json_str, "Failed deserializing JSON to response");
+                                yield U::from_err(DynamoError::msg(err.to_string()));
+                            }
                         }
                     }
-                    Err(err) => {
-                        // legacy log print
-                        let json_str = String::from_utf8_lossy(&res_bytes);
-                        tracing::warn!(%err, %json_str, "Failed deserializing JSON to response");
-
-                        Some(U::from_err(DynamoError::msg(err.to_string())))
-                    }
+                } else if is_complete_final {
+                    break;
+                } else if engine_ctx_.is_stopped() {
+                    tracing::debug!("Request cancelled and then trying to read a response");
+                    break;
+                } else {
+                    let err = DynamoError::builder()
+                        .error_type(ErrorType::Disconnected)
+                        .message("Stream ended before generation completed")
+                        .build();
+                    tracing::debug!("{}", err);
+                    yield U::from_err(err);
+                    break;
                 }
-            } else if is_complete_final {
-                // end of stream
-                None
-            } else if engine_ctx_.is_stopped() {
-                // Gracefully end the stream if 'stop_generating()' was called. Do NOT check for
-                // 'is_killed()' here because it implies the stream ended abnormally which should be
-                // handled by the error branch below.
-                tracing::debug!("Request cancelled and then trying to read a response");
-                None
-            } else {
-                // stream ended unexpectedly
-                let err = DynamoError::builder()
-                    .error_type(ErrorType::Disconnected)
-                    .message("Stream ended before generation completed")
-                    .build();
-                tracing::debug!("{}", err);
-                Some(U::from_err(err))
             }
-        });
+        };
 
         Ok(ResponseStream::new(Box::pin(stream), engine_ctx))
     }
