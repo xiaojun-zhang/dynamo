@@ -161,6 +161,16 @@ class DynamoVllmArgGroup(ArgGroup):
             default=None,
             help="Path to vLLM-Omni stage configuration YAML file for --omni mode (optional).",
         )
+        add_argument(
+            g,
+            flag_name="--stage-id",
+            env_var="DYN_VLLM_STAGE_ID",
+            default=None,
+            arg_type=int,
+            help="Stage ID for disaggregated omni mode. "
+            "When set with --omni, runs a single stage as an independent worker. "
+            "Without --stage-id, --omni runs the full pipeline in one process.",
+        )
 
         # Video encoding
         add_argument(
@@ -342,6 +352,7 @@ class DynamoVllmConfig(ConfigBase):
     # vLLM-Omni
     omni: bool
     stage_configs_path: Optional[str] = None
+    stage_id: Optional[int] = None
 
     # Video encoding
     default_video_fps: int = 16
@@ -469,9 +480,19 @@ class DynamoVllmConfig(ConfigBase):
             )
 
     def _validate_omni_stage_config(self) -> None:
-        """Require stage_configs_path when using --omni."""
+        """Validate omni-related flags."""
         if self.stage_configs_path and not self.omni:
             raise ValueError(
                 "--stage-configs-path is only allowed when using --omni. "
                 "Specify a YAML file containing stage configurations for the multi-stage pipeline."
+            )
+        if self.stage_id is not None and not self.omni:
+            raise ValueError(
+                "--stage-id is only allowed when using --omni. "
+                "Use --omni --stage-id N to run a single stage as an independent worker."
+            )
+        if self.stage_id is not None and self.stage_configs_path is None:
+            raise ValueError(
+                "--stage-configs-path is required when using --stage-id. "
+                "Provide the stage configuration YAML file."
             )
