@@ -5,5 +5,12 @@
 
 from .base_handler import BaseOmniHandler
 from .omni_handler import OmniHandler
+from .stage_handler import OmniStageWorkerHandler
+from .stage_router import OmniStageRouter
 
-__all__ = ["BaseOmniHandler", "OmniHandler"]
+__all__ = [
+    "BaseOmniHandler",
+    "OmniHandler",
+    "OmniStageRouter",
+    "OmniStageWorkerHandler",
+]
