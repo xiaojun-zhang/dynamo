@@ -180,6 +180,11 @@ async def worker() -> None:
             snapshot_engine=snapshot_engine,
         )
         logger.debug("multimodal worker completed")
+    elif config.omni and config.omni_router:
+        from dynamo.vllm.omni.stage_router_service import init_omni_stage_router
+
+        await init_omni_stage_router(runtime, config, shutdown_event)
+        logger.debug("init_omni_stage_router completed")
     elif config.omni and config.stage_id is not None:
         from dynamo.vllm.omni.stage_init import init_omni_stage
 

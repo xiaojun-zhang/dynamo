@@ -171,6 +171,15 @@ class DynamoVllmArgGroup(ArgGroup):
             "When set with --omni, runs a single stage as an independent worker. "
             "Without --stage-id, --omni runs the full pipeline in one process.",
         )
+        add_negatable_bool_argument(
+            g,
+            flag_name="--omni-router",
+            env_var="DYN_VLLM_OMNI_ROUTER",
+            default=False,
+            help="Run as OmniStageRouter service for disaggregated omni mode. "
+            "Discovers stage workers via etcd and orchestrates the stage DAG. "
+            "Requires --omni and --stage-configs-path.",
+        )
 
         # Video encoding
         add_argument(
@@ -353,6 +362,7 @@ class DynamoVllmConfig(ConfigBase):
     omni: bool
     stage_configs_path: Optional[str] = None
     stage_id: Optional[int] = None
+    omni_router: bool = False
 
     # Video encoding
     default_video_fps: int = 16
@@ -495,4 +505,18 @@ class DynamoVllmConfig(ConfigBase):
             raise ValueError(
                 "--stage-configs-path is required when using --stage-id. "
                 "Provide the stage configuration YAML file."
+            )
+        if self.omni_router and not self.omni:
+            raise ValueError(
+                "--omni-router requires --omni. "
+                "Use --omni --omni-router --stage-configs-path to run the stage router."
+            )
+        if self.omni_router and self.stage_configs_path is None:
+            raise ValueError(
+                "--stage-configs-path is required when using --omni-router."
+            )
+        if self.omni_router and self.stage_id is not None:
+            raise ValueError(
+                "--omni-router and --stage-id are mutually exclusive. "
+                "Use --omni-router to run the router, --stage-id to run a stage worker."
             )
