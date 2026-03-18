@@ -155,7 +155,22 @@ class OmniHandler(BaseOmniHandler):
         parsed_request, request_type = parse_request_type(
             request, self.config.output_modalities
         )
-        inputs = await self.build_engine_inputs(parsed_request, request_type)
+
+        try:
+            inputs = await self.build_engine_inputs(parsed_request, request_type)
+        except (ValueError, NotImplementedError) as e:
+            logger.error(f"Invalid request {request_id}: {e}")
+            if request_type == RequestType.AUDIO_GENERATION:
+                yield NvAudioSpeechResponse(
+                    id=request_id,
+                    model=self.config.served_model_name or self.config.model,
+                    status="failed",
+                    created=int(time.time()),
+                    error=str(e),
+                ).model_dump()
+            else:
+                yield self._error_chunk(request_id, str(e))
+            return
 
         generate_kwargs: Dict[str, Any] = {
             "prompt": inputs.prompt,
@@ -225,7 +240,16 @@ class OmniHandler(BaseOmniHandler):
                 raise
             except Exception as e:
                 logger.error(f"Error during generation for request {request_id}: {e}")
-                yield self._error_chunk(request_id, str(e))
+                if inputs.request_type == RequestType.AUDIO_GENERATION:
+                    yield NvAudioSpeechResponse(
+                        id=request_id,
+                        model=self.config.served_model_name or self.config.model,
+                        status="failed",
+                        created=int(time.time()),
+                        error=str(e),
+                    ).model_dump()
+                else:
+                    yield self._error_chunk(request_id, str(e))
 
     async def build_engine_inputs(
         self,

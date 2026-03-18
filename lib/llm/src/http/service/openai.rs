@@ -2117,7 +2117,10 @@ async fn audio_speech(
         }
     }
 
-    // Fallback: return JSON if no binary audio available
+    // Fallback: return JSON (error responses or url format)
+    if response.status == "failed" {
+        return Ok((axum::http::StatusCode::BAD_REQUEST, Json(response)).into_response());
+    }
     Ok(Json(response).into_response())
 }
 
