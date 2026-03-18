@@ -463,8 +463,9 @@ impl ModelWatcher {
                         .kv_chooser_for(
                             &endpoint,
                             card.kv_cache_block_size,
-                            Some(self.router_config.kv_router_config),
+                            Some(self.router_config.kv_router_config.clone()),
                             WORKER_TYPE_DECODE, // This is the decode router
+                            Some(card.display_name.clone()),
                         )
                         .await?,
                 )
@@ -483,7 +484,7 @@ impl ModelWatcher {
                 .register_prefill_router(&model_name, &namespace)
                 .map(|rx| {
                     // Create prefill-specific config with track_active_blocks disabled
-                    let mut prefill_config = self.router_config.kv_router_config;
+                    let mut prefill_config = self.router_config.kv_router_config.clone();
                     prefill_config.router_track_active_blocks = false;
 
                     PrefillRouter::new(
@@ -492,7 +493,7 @@ impl ModelWatcher {
                         self.router_config.router_mode,
                         card.kv_cache_block_size,
                         Some(prefill_config),
-                        self.router_config.decode_fallback,
+                        self.router_config.enforce_disagg,
                         model_name.clone(),
                         namespace.clone(),
                     )
@@ -537,7 +538,7 @@ impl ModelWatcher {
                         kv_chooser.clone(),
                         tokenizer.clone(),
                         prefill_chooser.clone(),
-                        self.router_config.decode_fallback,
+                        self.router_config.enforce_disagg,
                         self.migration_limit,
                         self.metrics.clone(),
                     )
@@ -568,7 +569,7 @@ impl ModelWatcher {
                     preprocessor,
                     tokenizer,
                     prefill_chooser,
-                    self.router_config.decode_fallback,
+                    self.router_config.enforce_disagg,
                     self.migration_limit,
                     self.metrics.clone(),
                 )

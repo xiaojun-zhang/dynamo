@@ -6,16 +6,6 @@ title: Examples
 
 For quick start instructions, see the [SGLang README](README.md). This document provides all deployment patterns for running SGLang with Dynamo, including LLMs, multimodal, and diffusion models, and Kubernetes deployment.
 
-## Table of Contents
-
-- [Infrastructure Setup](#infrastructure-setup)
-- [LLM Serving](#llm-serving)
-- [Embedding Models](#embedding-models)
-- [Vision Models](#vision-models)
-- [Diffusion Models](#diffusion-models)
-- [Kubernetes Deployment](#kubernetes-deployment)
-- [Testing](#testing)
-
 ## Infrastructure Setup
 
 For local/bare-metal development, start etcd and optionally NATS using Docker Compose:
@@ -99,8 +89,8 @@ curl http://localhost:8000/v1/chat/completions \
       {
         "role": "user",
         "content": [
-          {"type": "text", "text": "Describe the image."},
-          {"type": "image_url", "image_url": {"url": "http://images.cocodataset.org/test2017/000000155781.jpg"}}
+          {"type": "text", "text": "Explain why Roger Federer is considered one of the greatest tennis players of all time"},
+          {"type": "image_url", "image_url": {"url": "https://media.newyorker.com/photos/63249cff39ac97c4c23ff5d0/master/w_2560%2Cc_limit/Marzorati%2520-%2520Federer%2520Retirement%25202.jpg"}}
         ]
       }
     ],
@@ -114,10 +104,10 @@ curl http://localhost:8000/v1/chat/completions \
 
 For advanced multimodal deployments with separate encoder, prefill, and decode workers (E/PD and E/P/D patterns), see the dedicated [SGLang Multimodal](../../features/multimodal/multimodal-sglang.md) documentation.
 
-| Pattern | Script | Description |
-|---------|--------|-------------|
-| E/PD | `./launch/multimodal_epd.sh` | Separate vision encoder + combined PD worker |
-| E/P/D | `./launch/multimodal_disagg.sh` | Separate encoder, prefill, and decode workers |
+| Pattern | Script                          | Description                                   |
+| ------- | ------------------------------- | --------------------------------------------- |
+| E/PD    | `./launch/multimodal_epd.sh`    | Separate vision encoder + combined PD worker  |
+| E/P/D   | `./launch/multimodal_disagg.sh` | Separate encoder, prefill, and decode workers |
 
 ## Diffusion Models
 
@@ -157,6 +147,7 @@ For full details on all diffusion worker types (LLM, image, video), see [Diffusi
 ### Kubernetes Deployment
 
 For complete K8s deployment examples, see:
+
 - [SGLang K8s deployment guide](https://github.com/ai-dynamo/dynamo/tree/main/examples/backends/sglang/deploy)
 - [SGLang aggregated router K8s example](https://github.com/ai-dynamo/dynamo/blob/main/examples/backends/sglang/deploy/agg_router.yaml)
 - [Kubernetes Deployment Guide](../../kubernetes/README.md)

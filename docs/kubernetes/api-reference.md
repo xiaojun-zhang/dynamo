@@ -176,7 +176,7 @@ _Appears in:_
 | `namespace` _string_ | Namespace is the desired namespace for the created DynamoGraphDeployment.<br />If not specified, defaults to the DGDR namespace. |  | Optional: \{\} <br /> |
 | `labels` _object (keys:string, values:string)_ | Labels are additional labels to add to the DynamoGraphDeployment metadata.<br />These are merged with auto-generated labels from the profiling process. |  | Optional: \{\} <br /> |
 | `annotations` _object (keys:string, values:string)_ | Annotations are additional annotations to add to the DynamoGraphDeployment metadata. |  | Optional: \{\} <br /> |
-| `workersImage` _string_ | WorkersImage specifies the container image to use for DynamoGraphDeployment worker components.<br />This image is used for both temporary DGDs created during online profiling and the final DGD.<br />If omitted, the image from the base config file (e.g., disagg.yaml) is used.<br />Example: "nvcr.io/nvidia/ai-dynamo/vllm-runtime:0.9.0" |  | Optional: \{\} <br /> |
+| `workersImage` _string_ | WorkersImage specifies the container image to use for DynamoGraphDeployment worker components.<br />This image is used for both temporary DGDs created during online profiling and the final DGD.<br />If omitted, the image from the base config file (e.g., disagg.yaml) is used.<br />Example: "nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.0.0" |  | Optional: \{\} <br /> |
 
 
 #### DeploymentStatus
@@ -262,9 +262,10 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `podTemplateSpec` _[PodTemplateSpec](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#podtemplatespec-v1-core)_ | PodTemplateSpec allows customizing the checkpoint Job pod<br />This should include the container that runs the workload to be checkpointed |  | Required: \{\} <br /> |
-| `activeDeadlineSeconds` _integer_ | ActiveDeadlineSeconds specifies the maximum time the Job can run | 3600 | Optional: \{\} <br /> |
-| `backoffLimit` _integer_ | BackoffLimit specifies the number of retries before marking the Job failed | 3 | Optional: \{\} <br /> |
-| `ttlSecondsAfterFinished` _integer_ | TTLSecondsAfterFinished specifies how long to keep the Job after completion | 300 | Optional: \{\} <br /> |
+| `sharedMemory` _[SharedMemorySpec](#sharedmemoryspec)_ | SharedMemory controls the tmpfs mounted at /dev/shm for the checkpoint Job pod.<br />When omitted, checkpoint Jobs use the same default 8Gi tmpfs as Dynamo components. |  | Optional: \{\} <br /> |
+| `activeDeadlineSeconds` _integer_ | ActiveDeadlineSeconds specifies the maximum time the Job can run | 3600 | Minimum: 1 <br />Optional: \{\} <br /> |
+| `backoffLimit` _integer_ | Deprecated: BackoffLimit is ignored. Checkpoint Jobs never retry. |  | Minimum: 0 <br />Optional: \{\} <br /> |
+| `ttlSecondsAfterFinished` _integer_ | TTLSecondsAfterFinished specifies how long to keep the Job after completion | 300 | Minimum: 0 <br />Optional: \{\} <br /> |
 
 
 #### DynamoCheckpointPhase
@@ -324,7 +325,7 @@ _Appears in:_
 | `jobName` _string_ | JobName is the name of the checkpoint creation Job |  | Optional: \{\} <br /> |
 | `createdAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#time-v1-meta)_ | CreatedAt is the timestamp when the checkpoint tar was created |  | Optional: \{\} <br /> |
 | `message` _string_ | Message provides additional information about the current state |  | Optional: \{\} <br /> |
-| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#condition-v1-meta) array_ | Conditions represent the latest available observations of the checkpoint's state |  | Optional: \{\} <br /> |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#condition-v1-meta) array_ | DEPRECATED: Conditions are deprecated. Use status.phase instead. |  | Optional: \{\} <br /> |
 
 
 #### DynamoCheckpointStorageType
@@ -396,6 +397,7 @@ _Appears in:_
 | `multinode` _[MultinodeSpec](#multinodespec)_ | Multinode is the configuration for multinode components. |  |  |
 | `scalingAdapter` _[ScalingAdapter](#scalingadapter)_ | ScalingAdapter configures whether this service uses the DynamoGraphDeploymentScalingAdapter.<br />When enabled, replicas are managed via DGDSA and external autoscalers can scale<br />the service using the Scale subresource. When disabled, replicas can be modified directly. |  | Optional: \{\} <br /> |
 | `eppConfig` _[EPPConfig](#eppconfig)_ | EPPConfig defines EPP-specific configuration options for Endpoint Picker Plugin components.<br />Only applicable when ComponentType is "epp". |  | Optional: \{\} <br /> |
+| `frontendSidecar` _[FrontendSidecarSpec](#frontendsidecarspec)_ | FrontendSidecar configures an auto-generated frontend sidecar container.<br />When specified, the operator injects a fully configured frontend container<br />with all standard Dynamo environment variables, health probes, and ports.<br />This eliminates the need to manually specify these in extraPodSpec.containers. (GAIE) |  | Optional: \{\} <br /> |
 | `checkpoint` _[ServiceCheckpointConfig](#servicecheckpointconfig)_ | Checkpoint configures container checkpointing for this service.<br />When enabled, pods can be restored from a checkpoint files for faster cold start. |  | Optional: \{\} <br /> |
 
 
@@ -436,6 +438,7 @@ _Appears in:_
 | `multinode` _[MultinodeSpec](#multinodespec)_ | Multinode is the configuration for multinode components. |  |  |
 | `scalingAdapter` _[ScalingAdapter](#scalingadapter)_ | ScalingAdapter configures whether this service uses the DynamoGraphDeploymentScalingAdapter.<br />When enabled, replicas are managed via DGDSA and external autoscalers can scale<br />the service using the Scale subresource. When disabled, replicas can be modified directly. |  | Optional: \{\} <br /> |
 | `eppConfig` _[EPPConfig](#eppconfig)_ | EPPConfig defines EPP-specific configuration options for Endpoint Picker Plugin components.<br />Only applicable when ComponentType is "epp". |  | Optional: \{\} <br /> |
+| `frontendSidecar` _[FrontendSidecarSpec](#frontendsidecarspec)_ | FrontendSidecar configures an auto-generated frontend sidecar container.<br />When specified, the operator injects a fully configured frontend container<br />with all standard Dynamo environment variables, health probes, and ports.<br />This eliminates the need to manually specify these in extraPodSpec.containers. (GAIE) |  | Optional: \{\} <br /> |
 | `checkpoint` _[ServiceCheckpointConfig](#servicecheckpointconfig)_ | Checkpoint configures container checkpointing for this service.<br />When enabled, pods can be restored from a checkpoint files for faster cold start. |  | Optional: \{\} <br /> |
 
 
@@ -510,7 +513,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `model` _string_ | Model specifies the model to deploy (e.g., "Qwen/Qwen3-0.6B", "meta-llama/Llama-3-70b").<br />This is a high-level identifier for easy reference in kubectl output and logs.<br />The controller automatically sets this value in profilingConfig.config.deployment.model. |  | Required: \{\} <br /> |
-| `backend` _string_ | Backend specifies the inference backend for profiling.<br />The controller automatically sets this value in profilingConfig.config.engine.backend.<br />Profiling runs on real GPUs or via AIC simulation to collect performance data. |  | Enum: [vllm sglang trtllm] <br />Required: \{\} <br /> |
+| `backend` _string_ | Backend specifies the inference backend for profiling.<br />The controller automatically sets this value in profilingConfig.config.engine.backend.<br />Profiling runs on real GPUs or via AIC simulation to collect performance data. |  | Enum: [auto vllm sglang trtllm] <br />Required: \{\} <br /> |
 | `useMocker` _boolean_ | UseMocker indicates whether to deploy a mocker DynamoGraphDeployment instead of<br />a real backend deployment. When true, the deployment uses simulated engines that<br />don't require GPUs, using the profiling data to simulate realistic timing behavior.<br />Mocker is available in all backend images and useful for large-scale experiments.<br />Profiling still runs against the real backend (specified above) to collect performance data. | false |  |
 | `profilingConfig` _[ProfilingConfigSpec](#profilingconfigspec)_ | ProfilingConfig provides the complete configuration for the profiling job.<br />Note: GPU discovery is automatically attempted to detect GPU resources from Kubernetes<br />cluster nodes. If the operator has node read permissions (cluster-wide or explicitly granted),<br />discovered GPU configuration is used as defaults when hardware configuration is not manually<br />specified (minNumGpusPerEngine, maxNumGpusPerEngine, numGpusPerNode). User-specified values<br />always take precedence over auto-discovered values. If GPU discovery fails (e.g.,<br />namespace-restricted operator without node permissions), manual hardware config is required.<br />This configuration is passed directly to the profiler.<br />The structure matches the profile_sla config format exactly (see ProfilingConfigSpec for schema).<br />Note: deployment.model and engine.backend are automatically set from the high-level<br />modelName and backend fields and should not be specified in this config. |  | Required: \{\} <br /> |
 | `enableGpuDiscovery` _boolean_ | EnableGPUDiscovery controls whether the operator attempts to discover GPU hardware from cluster nodes.<br />DEPRECATED: This field is deprecated and will be removed in v1beta1. GPU discovery is now always<br />attempted automatically. Setting this field has no effect - the operator will always try to discover<br />GPU hardware when node read permissions are available. If discovery is unavailable (e.g., namespace-scoped<br />operator without permissions), manual hardware configuration is required regardless of this setting. | true | Optional: \{\} <br /> |
@@ -631,6 +634,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `annotations` _object (keys:string, values:string)_ | Annotations to propagate to all child resources (PCS, DCD, Deployments, and pod templates).<br />Service-level annotations take precedence over these values. |  | Optional: \{\} <br /> |
+| `labels` _object (keys:string, values:string)_ | Labels to propagate to all child resources (PCS, DCD, Deployments, and pod templates).<br />Service-level labels take precedence over these values. |  | Optional: \{\} <br /> |
 | `pvcs` _[PVC](#pvc) array_ | PVCs defines a list of persistent volume claims that can be referenced by components.<br />Each PVC must have a unique name that can be referenced in component specifications. |  | MaxItems: 100 <br />Optional: \{\} <br /> |
 | `services` _object (keys:string, values:[DynamoComponentDeploymentSharedSpec](#dynamocomponentdeploymentsharedspec))_ | Services are the services to deploy as part of this deployment. |  | MaxProperties: 25 <br />Optional: \{\} <br /> |
 | `envs` _[EnvVar](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#envvar-v1-core) array_ | Envs are environment variables applied to all services in the deployment unless<br />overridden by service-specific configuration. |  | Optional: \{\} <br /> |
@@ -789,6 +794,28 @@ _Appears in:_
 | `mainContainer` _[Container](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#container-v1-core)_ |  |  |  |
 
 
+#### FrontendSidecarSpec
+
+
+
+FrontendSidecarSpec configures the auto-generated frontend sidecar container.
+The operator uses these fields together with built-in frontend defaults (command, probes, ports,
+and Dynamo env vars) to produce a fully configured sidecar container.
+
+
+
+_Appears in:_
+- [DynamoComponentDeploymentSharedSpec](#dynamocomponentdeploymentsharedspec)
+- [DynamoComponentDeploymentSpec](#dynamocomponentdeploymentspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `image` _string_ | Image is the container image for the frontend sidecar. |  | Required: \{\} <br /> |
+| `args` _string array_ | Args overrides the default frontend arguments. When specified, these replace<br />the default ["-m", "dynamo.frontend"] entirely.<br />For example, ["-m", "dynamo.frontend", "--router-mode", "direct"] for GAIE deployments. |  | Optional: \{\} <br /> |
+| `envFromSecret` _string_ | EnvFromSecret references a Secret whose key/value pairs will be exposed as<br />environment variables in the frontend sidecar container. |  | Optional: \{\} <br /> |
+| `envs` _[EnvVar](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#envvar-v1-core) array_ | Envs defines additional environment variables for the frontend sidecar.<br />These are merged with (and can override) the auto-generated Dynamo env vars. |  | Optional: \{\} <br /> |
+
+
 #### IngressSpec
 
 
@@ -921,7 +948,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `config` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#json-v1-apiextensions-k8s-io)_ | Config is the profiling configuration as arbitrary JSON/YAML. This will be passed directly to the profiler.<br />The profiler will validate the configuration and report any errors. |  | Optional: \{\} <br />Type: object <br /> |
 | `configMapRef` _[ConfigMapKeySelector](#configmapkeyselector)_ | ConfigMapRef is an optional reference to a ConfigMap containing the DynamoGraphDeployment<br />base config file (disagg.yaml). This is separate from the profiling config above.<br />The path to this config will be set as engine.config in the profiling config. |  | Optional: \{\} <br /> |
-| `profilerImage` _string_ | ProfilerImage specifies the container image to use for profiling jobs.<br />This image contains the profiler code and dependencies needed for SLA-based profiling.<br />Example: "nvcr.io/nvidia/ai-dynamo/vllm-runtime:0.9.0" |  | Required: \{\} <br /> |
+| `profilerImage` _string_ | ProfilerImage specifies the container image to use for profiling jobs.<br />This image contains the profiler code and dependencies needed for SLA-based profiling.<br />Example: "nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.0.0" |  | Required: \{\} <br /> |
 | `outputPVC` _string_ | OutputPVC is an optional PersistentVolumeClaim name for storing profiling output.<br />If specified, all profiling artifacts (logs, plots, configs, raw data) will be written<br />to this PVC instead of an ephemeral emptyDir volume. This allows users to access<br />complete profiling results after the job completes by mounting the PVC.<br />The PVC must exist in the same namespace as the DGDR.<br />If not specified, profiling uses emptyDir and only essential data is saved to ConfigMaps.<br />Note: ConfigMaps are still created regardless of this setting for planner integration. |  | Optional: \{\} <br /> |
 | `resources` _[ResourceRequirements](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#resourcerequirements-v1-core)_ | Resources specifies the compute resource requirements for the profiling job container.<br />If not specified, no resource requests or limits are set. |  | Optional: \{\} <br /> |
 | `tolerations` _[Toleration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#toleration-v1-core) array_ | Tolerations allows the profiling job to be scheduled on nodes with matching taints.<br />For example, to schedule on GPU nodes, add a toleration for the nvidia.com/gpu taint. |  | Optional: \{\} <br /> |
@@ -1131,7 +1158,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | Enabled indicates whether checkpointing is enabled for this service | false | Optional: \{\} <br /> |
 | `mode` _[CheckpointMode](#checkpointmode)_ | Mode defines how checkpoint creation is handled<br />- Auto: DGD controller creates Checkpoint CR automatically<br />- Manual: User must create Checkpoint CR | Auto | Enum: [Auto Manual] <br />Optional: \{\} <br /> |
-| `checkpointRef` _string_ | CheckpointRef references an existing Checkpoint CR to use<br />If specified, Identity is ignored and this checkpoint is used directly |  | Optional: \{\} <br /> |
+| `checkpointRef` _string_ | CheckpointRef references an existing DynamoCheckpoint CR by metadata.name.<br />If specified, this service's Identity is ignored and the referenced checkpoint is used directly. |  | Optional: \{\} <br /> |
 | `identity` _[DynamoCheckpointIdentity](#dynamocheckpointidentity)_ | Identity defines the checkpoint identity for hash computation<br />Used when Mode is Auto or when looking up existing checkpoints<br />Required when checkpointRef is not specified |  | Optional: \{\} <br /> |
 
 
@@ -1150,7 +1177,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `checkpointName` _string_ | CheckpointName is the name of the associated Checkpoint CR |  | Optional: \{\} <br /> |
 | `identityHash` _string_ | IdentityHash is the computed hash of the checkpoint identity |  | Optional: \{\} <br /> |
-| `ready` _boolean_ | Ready indicates if the checkpoint is ready for use |  | Optional: \{\} <br /> |
+| `ready` _boolean_ | Ready indicates if the checkpoint was visible to the worker at startup |  | Optional: \{\} <br /> |
 
 
 #### ServiceReplicaStatus
@@ -1184,6 +1211,7 @@ _Appears in:_
 
 
 _Appears in:_
+- [DynamoCheckpointJobConfig](#dynamocheckpointjobconfig)
 - [DynamoComponentDeploymentSharedSpec](#dynamocomponentdeploymentsharedspec)
 - [DynamoComponentDeploymentSpec](#dynamocomponentdeploymentspec)
 
@@ -1378,6 +1406,28 @@ _Appears in:_
 | `mocker` _[MockerSpec](#mockerspec)_ | Mocker configures the simulated (mocker) backend for testing without GPUs. |  | Optional: \{\} <br /> |
 
 
+#### GPUSKUType
+
+_Underlying type:_ _string_
+
+GPUSKUType is the AIC hardware system identifier for a supported GPU.
+
+_Validation:_
+- Enum: [gb200_sxm h200_sxm h100_sxm b200_sxm a100_sxm l40s]
+
+_Appears in:_
+- [HardwareSpec](#hardwarespec)
+
+| Field | Description |
+| --- | --- |
+| `gb200_sxm` |  |
+| `h200_sxm` |  |
+| `h100_sxm` |  |
+| `b200_sxm` |  |
+| `a100_sxm` |  |
+| `l40s` |  |
+
+
 #### HardwareSpec
 
 
@@ -1392,7 +1442,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `gpuSku` _string_ | GPUSKU is the GPU SKU identifier (e.g., "H100_SXM", "A100_80GB"). |  | Optional: \{\} <br /> |
+| `gpuSku` _[GPUSKUType](#gpuskutype)_ | GPUSKU is the AIC hardware system identifier for the GPU.<br />When omitted, the operator auto-detects this via InferHardwareSystem from cluster GPU node labels. |  | Enum: [gb200_sxm h200_sxm h100_sxm b200_sxm a100_sxm l40s] <br />Optional: \{\} <br /> |
 | `vramMb` _float_ | VRAMMB is the VRAM per GPU in MiB. |  | Optional: \{\} <br /> |
 | `totalGpus` _integer_ | TotalGPUs is the total number of GPUs available in the cluster. |  | Optional: \{\} <br /> |
 | `numGpusPerNode` _integer_ | NumGPUsPerNode is the number of GPUs per node. |  | Optional: \{\} <br /> |
@@ -1432,24 +1482,6 @@ _Appears in:_
 | `pvcName` _string_ | PVCName is the name of the PersistentVolumeClaim containing model weights.<br />The PVC must exist in the same namespace as the DGDR. |  | Optional: \{\} <br /> |
 | `pvcModelPath` _string_ | PVCModelPath is the path to the model checkpoint directory within the PVC<br />(e.g. "deepseek-r1" or "models/Llama-3.1-405B-FP8"). |  | Optional: \{\} <br /> |
 | `pvcMountPath` _string_ | PVCMountPath is the mount path for the PVC inside the container. | /opt/model-cache | Optional: \{\} <br /> |
-
-
-#### OptimizationType
-
-_Underlying type:_ _string_
-
-OptimizationType specifies the profiling optimization strategy.
-
-_Validation:_
-- Enum: [latency throughput]
-
-_Appears in:_
-- [SLASpec](#slaspec)
-
-| Field | Description |
-| --- | --- |
-| `latency` |  |
-| `throughput` |  |
 
 
 #### OverridesSpec
@@ -1533,7 +1565,6 @@ _Appears in:_
 
 
 SLASpec defines the service-level agreement targets for profiling optimization.
-Exactly one mode should be active: ttft+itl (default), e2eLatency, or optimizationType.
 
 
 
@@ -1542,7 +1573,6 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `optimizationType` _[OptimizationType](#optimizationtype)_ | OptimizationType controls the profiling optimization strategy.<br />Use when explicit SLA targets (ttft+itl or e2eLatency) are not known. |  | Enum: [latency throughput] <br />Optional: \{\} <br /> |
 | `ttft` _float_ | TTFT is the Time To First Token target in milliseconds. |  | Optional: \{\} <br /> |
 | `itl` _float_ | ITL is the Inter-Token Latency target in milliseconds. |  | Optional: \{\} <br /> |
 | `e2eLatency` _float_ | E2ELatency is the target end-to-end request latency in milliseconds.<br />Alternative to specifying TTFT + ITL. |  | Optional: \{\} <br /> |
@@ -1594,6 +1624,23 @@ _Appears in:_
 
 
 
+#### CertProvisionMode
+
+_Underlying type:_ _string_
+
+CertProvisionMode controls how webhook TLS certificates are managed.
+
+
+
+_Appears in:_
+- [WebhookServer](#webhookserver)
+
+| Field | Description |
+| --- | --- |
+| `auto` | CertProvisionModeAuto uses the built-in cert-controller to generate and rotate certificates.<br /> |
+| `manual` | CertProvisionModeManual expects certificates to be provided externally (e.g., cert-manager, admin).<br /> |
+
+
 #### CheckpointConfiguration
 
 
@@ -1642,7 +1689,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `pvcName` _string_ | PVCName is the name of the PVC | chrek-pvc |  |
+| `pvcName` _string_ | PVCName is the name of the PVC | snapshot-pvc |  |
 | `basePath` _string_ | BasePath is the base directory within the PVC | /checkpoints |  |
 
 
@@ -1885,7 +1932,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `bindAddress` _string_ | BindAddress is the address the server binds to |  |  |
 | `port` _integer_ | Port is the port the server listens on |  |  |
-| `secure` _boolean_ | Secure enables secure serving for the metrics endpoint |  |  |
+| `secure` _boolean_ | Secure enables secure serving for the metrics endpoint.<br />nil = default to true (secure by default). |  |  |
 
 
 #### NamespaceConfiguration
@@ -2035,7 +2082,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `metrics` _[MetricsServer](#metricsserver)_ | Metrics server configuration | \{ bindAddress:127.0.0.1 port:8080 \} |  |
+| `metrics` _[MetricsServer](#metricsserver)_ | Metrics server configuration | \{ bindAddress:0.0.0.0 port:8080 secure:true \} |  |
 | `healthProbe` _[Server](#server)_ | Health probe server configuration | \{ bindAddress:0.0.0.0 port:8081 \} |  |
 | `webhook` _[WebhookServer](#webhookserver)_ | Webhook server configuration | \{ certDir:/tmp/k8s-webhook-server/serving-certs host:0.0.0.0 port:9443 \} |  |
 
@@ -2057,6 +2104,9 @@ _Appears in:_
 | `port` _integer_ | Port is the port the server listens on |  |  |
 | `host` _string_ | Host is the address the webhook server binds to |  |  |
 | `certDir` _string_ | CertDir is the directory containing TLS certificates |  |  |
+| `certProvisionMode` _[CertProvisionMode](#certprovisionmode)_ | CertProvisionMode controls certificate management: "auto" (built-in cert-controller) or "manual" (external) | auto |  |
+| `secretName` _string_ | SecretName is the name of the Kubernetes Secret holding webhook TLS certificates | webhook-server-cert |  |
+| `serviceName` _string_ | ServiceName is the name of the Kubernetes Service fronting the webhook server.<br />Used to generate certificate SANs. Set by the Helm chart. |  |  |
 
 
 # Operator Default Values Injection
@@ -2302,17 +2352,6 @@ These are injected into all components when the corresponding infrastructure ser
 | Variable | Purpose | Default | Type | Condition |
 | --- | --- | --- | --- | --- |
 | `OMPI_MCA_orte_keep_fqdn_hostnames` | Instructs OpenMPI to preserve FQDN hostnames for inter-node communication | `1` | `string` | Multinode deployments only |
-
-### Checkpoint / Restore
-
-These environment variables are injected when checkpoint/restore is enabled for a component.
-
-| Variable | Purpose | Default | Type | Condition |
-| --- | --- | --- | --- | --- |
-| `DYN_CHECKPOINT_PATH` | Base directory where checkpoint data is stored | From operator checkpoint config `storage.pvc.basePath` | `string` | PVC storage type |
-| `DYN_CHECKPOINT_LOCATION` | Full checkpoint URI (for non-PVC backends) | — | `string` | S3 or OCI storage type |
-| `DYN_CHECKPOINT_HASH` | Identity hash that uniquely identifies the checkpoint | — | `string` | Always set when checkpoint is enabled |
-| `SKIP_WAIT_FOR_CHECKPOINT` | Skips the checkpoint readiness polling loop; checks once and proceeds | — | `string` | Set on restored and DGD pods |
 
 ## Service Accounts
 
