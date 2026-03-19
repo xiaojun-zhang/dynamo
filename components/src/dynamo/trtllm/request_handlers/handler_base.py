@@ -197,17 +197,15 @@ class HandlerBase(BaseGenerativeHandler):
         self,
         generation_result: GenerationResult,
         context: Context,
-        prefill_done_event: Optional[asyncio.Event] = None,
         first_token_event: Optional[asyncio.Event] = None,
     ):
         """
         Background task to trigger cancellation if request is cancelled or shutdown
         event is set.
 
-        In disaggregated serving, abort is conditionally suppressed to protect
-        in-flight KV cache transfers:
-        - Prefill: abort suppressed after context computation (prefill_done_event set)
-        - Decode: abort delayed until first token received (first_token_event)
+        In disaggregated serving, decode abort is delayed until first token is
+        received (first_token_event), ensuring KV cache transfer completes before
+        the decode worker stops.
 
         Raise GeneratorExit if shutdown event is triggered.
         """
@@ -249,12 +247,6 @@ class HandlerBase(BaseGenerativeHandler):
                     f"Request ID {context.id()} cancelled but abort() skipped "
                     "(DYN_TRTLLM_DISABLE_REQUEST_ABORT=true)"
                 )
-            elif prefill_done_event is not None and prefill_done_event.is_set():
-                # Prefill context done, KV transfer may be in flight — suppress abort
-                logging.info(
-                    f"[FIX-DISAGG] Prefill abort suppressed for request {context.id()} "
-                    "(context done, protecting KV transfer)"
-                )
             elif first_token_event is not None and not first_token_event.is_set():
                 # Decode waiting for KV — delay abort until first token
                 logging.info(
@@ -288,16 +280,14 @@ class HandlerBase(BaseGenerativeHandler):
         self,
         generation_result: GenerationResult,
         context: Context,
-        prefill_done_event: Optional[asyncio.Event] = None,
         first_token_event: Optional[asyncio.Event] = None,
     ) -> AsyncGenerator[asyncio.Task, None]:
         """
         Monitor for cancellation triggers and cancel by calling
         generation_result.abort().
 
-        In disaggregated serving, event guards protect KV transfers from abort:
-        - prefill_done_event: suppresses abort after context completion
-        - first_token_event: delays decode abort until first token received
+        In disaggregated serving, first_token_event delays decode abort until
+        first token is received, ensuring KV cache transfer completes.
 
         Raise GeneratorExit if shutdown event is triggered.
 
@@ -307,7 +297,6 @@ class HandlerBase(BaseGenerativeHandler):
         monitor_task = asyncio.create_task(
             self._handle_cancellation(
                 generation_result, context,
-                prefill_done_event=prefill_done_event,
                 first_token_event=first_token_event,
             )
         )
@@ -862,12 +851,7 @@ class HandlerBase(BaseGenerativeHandler):
                 scheduling_params=scheduling_params,
             )
 
-            # Create disagg event guards to protect KV cache transfers from abort
-            prefill_done_event = (
-                asyncio.Event()
-                if self.disaggregation_mode == DisaggregationMode.PREFILL
-                else None
-            )
+            # Create first_token_event for decode to delay abort until KV transfer completes
             first_token_event = (
                 asyncio.Event()
                 if self.disaggregation_mode == DisaggregationMode.DECODE
@@ -877,15 +861,12 @@ class HandlerBase(BaseGenerativeHandler):
             # Monitor for cancellation triggers and cancel by calling generation_result.abort()
             async with self._cancellation_monitor(
                 generation_result, context,
-                prefill_done_event=prefill_done_event,
                 first_token_event=first_token_event,
             ):
                 _first_result_signaled = False
                 async for res in generation_result:
-                    # Signal disagg event guards on first result
+                    # Signal first_token_event on first result (decode: KV received)
                     if not _first_result_signaled:
-                        if prefill_done_event is not None:
-                            prefill_done_event.set()
                         if first_token_event is not None:
                             first_token_event.set()
                         _first_result_signaled = True
