@@ -137,18 +137,22 @@ def test_kv_cache_behavior():
 
 The `max_vram_gib(N)` marker records how much GPU memory a test needs. The pytest invocation can use `--max-vram-gib=N` as a **selector** to run only tests that fit on the available GPU. Tests that exceed the budget are skipped at collection time (before any test starts). Tests without a `max_vram_gib` marker always run (no constraint assumed).
 
+This is for the following use cases:
+- **MIG partitioned GPUs:** when running tests in parallel on MIG slices (e.g., 2x 40 GiB partitions on an 80 GiB GPU), each slice has limited VRAM.
+- **Smaller CI GPUs:** some CI jobs use L4 GPUs with only 24 GiB of VRAM.
+
 Nothing prevents you from running without this flag — but if a test needs more VRAM than is physically available, it will OOM at runtime (e.g., vLLM raises `ValueError: No available memory for the cache blocks`).
 
 ```bash
-# Run only tests that fit on a 48 GiB GPU — tests needing >48 GiB are skipped
-python3 -m pytest --max-vram-gib=48 tests/
+# Preview which gpu_1 vllm tests fit on a 16 GiB MIG partition (no tests are executed)
+python3 -m pytest --max-vram-gib=16 --dry-run -m "gpu_1 and vllm" tests/serve/test_vllm.py
+
+# Same, but for 24 GiB L4 CI GPUs
+python3 -m pytest --max-vram-gib=24 --dry-run -m "gpu_1 and vllm" tests/serve/test_vllm.py
 
 # GPU tests that have no max_vram_gib marker yet — need profiling
 # TODO: profile these tests and add max_vram_gib markers
-python3 -m pytest -m "(gpu_1 or gpu_2 or gpu_4 or gpu_8) and not max_vram_gib" tests/
-
-# No filter — run everything regardless of VRAM (tests that exceed available memory will OOM)
-python3 -m pytest tests/
+python3 -m pytest --dry-run -m "(gpu_1 or gpu_2 or gpu_4 or gpu_8) and not max_vram_gib" tests/serve/test_vllm.py
 ```
 
 ### Lifecycle Marker Note
@@ -452,11 +456,13 @@ The profiler sets the `_PROFILE_PYTEST_VRAM_FRAC_OVERRIDE` environment variable 
 
 | Engine  | CLI flag                         | Launch script support |
 |---------|----------------------------------|-----------------------|
-| vLLM    | `--gpu-memory-utilization`       | Implemented in `agg.sh`, `disagg.sh`, etc. |
-| SGLang  | `--mem-fraction-static`          | Not yet implemented (TODO) |
+| vLLM    | `--gpu-memory-utilization`       | Implemented in `agg.sh`, `disagg.sh`, etc. via `build_gpu_mem_args` |
+| SGLang  | `--mem-fraction-static`          | Implemented in `agg.sh`, `agg_embed.sh`, `disagg.sh`, `agg_router.sh`, `disagg_same_gpu.sh` via `build_gpu_mem_args`. Multimodal scripts (`multimodal_epd.sh`, `multimodal_disagg.sh`) split the override proportionally between workers. |
 | TRT-LLM | `--free-gpu-memory-fraction`    | Not yet implemented (has its own `DYN_TRTLLM_FREE_GPU_MEMORY_FRACTION`, TODO: unify) |
 
-Scripts that already hard-code their own memory fraction (e.g. `agg_multimodal.sh` with 0.85) have a TODO to honor `_PROFILE_PYTEST_VRAM_FRAC_OVERRIDE` in the future. If the profiler detects constant VRAM across all probes (meaning the env var is ignored), it prints a warning and skips marker recommendations.
+**Note on sglang:** Unlike vLLM (where `--max-model-len` affects KV cache sizing), sglang's `--mem-fraction-static` is the sole knob for KV cache allocation. `--context-length` and `--max-running-requests` only affect request scheduling, not memory allocation. See `examples/common/gpu_utils.md` for details.
+
+If the profiler detects constant VRAM across all probes (meaning the env var is ignored), it prints a warning and skips marker recommendations.
 
 ### Usage
 
