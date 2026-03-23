@@ -163,7 +163,7 @@ class BaseOmniHandler(BaseWorkerHandler[Dict[str, Any], Dict[str, Any]]):
         self,
         request_id: str,
         error_message: str,
-        request_type: "RequestType | None" = None,
+        request_type=None,
     ) -> Dict[str, Any]:
         """Create an error response matching the expected protocol for the request type.
 
