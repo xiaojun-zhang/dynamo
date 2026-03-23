@@ -100,7 +100,7 @@ pub mod openai {
     pub mod audios {
         use super::*;
 
-        pub use protocols::openai::audios::{NvCreateAudioSpeechRequest, NvAudioSpeechResponse};
+        pub use protocols::openai::audios::{NvAudioSpeechResponse, NvCreateAudioSpeechRequest};
 
         /// A [`UnaryEngine`] implementation for the Audio Speech API
         pub type OpenAIAudiosUnaryEngine =

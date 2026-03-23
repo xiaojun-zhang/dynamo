@@ -37,7 +37,6 @@ pub struct NvCreateAudioSpeechRequest {
     pub speed: Option<f64>,
 
     // Qwen3-TTS specific parameters (top-level, matching vLLM-Omni)
-
     /// TTS task type: "CustomVoice", "VoiceDesign", or "Base"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_type: Option<String>,
