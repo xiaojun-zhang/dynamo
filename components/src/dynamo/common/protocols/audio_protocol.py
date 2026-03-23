@@ -5,6 +5,11 @@
 
 These types follow the vLLM-Omni OpenAICreateSpeechRequest format,
 with TTS-specific parameters as top-level fields (not nested in nvext).
+
+Note: These Pydantic models mirror the Rust protocol types in
+lib/llm/src/protocols/openai/audios.rs. Ideally these should be
+code-generated from the Rust definitions; for now they are maintained
+manually and must be kept in sync.
 """
 
 from typing import Literal, Optional
