@@ -79,6 +79,15 @@ impl<S: Storage, L: LocalityProvider + 'static, M: BlockMetadata> State<S, L, M>
                     tracing::error!("failed to send response to return block");
                 }
             }
+            PriorityRequest::FindBlocksWithHashes(req) => {
+                let (sequence_hashes, resp_tx) = req.dissolve();
+                let immutable_blocks = self
+                    .find_blocks_with_hashes(sequence_hashes, return_rx)
+                    .await;
+                if resp_tx.send(Ok(immutable_blocks)).is_err() {
+                    tracing::error!("failed to send response to find blocks with hashes");
+                }
+            }
         }
     }
 
@@ -308,6 +317,51 @@ impl<S: Storage, L: LocalityProvider + 'static, M: BlockMetadata> State<S, L, M>
                 .expect("unable to register block; should never happen");
 
             immutable_blocks.push(immutable);
+        }
+
+        immutable_blocks
+    }
+
+    pub async fn find_blocks_with_hashes(
+        &mut self,
+        sequence_hashes: Vec<SequenceHash>,
+        return_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Block<S, L, M>>,
+    ) -> Vec<ImmutableBlock<S, L, M>> {
+        // Drain the return channel immediately (Non-blocking)
+        // This moves all "in-flight" blocks into the inactive pool
+        while let Ok(block) = return_rx.try_recv() {
+            self.handle_return_block(block);
+        }
+
+        let mut immutable_blocks = Vec::with_capacity(sequence_hashes.len());
+
+        for sequence_hash in sequence_hashes {
+            if !self.registry.is_registered(sequence_hash) {
+                continue;
+            }
+
+            // 1. Check Active Pool
+            if let Some(immutable) = self.active.match_sequence_hash(sequence_hash) {
+                immutable_blocks.push(immutable);
+                continue;
+            }
+
+            // 2. Check Inactive Pool
+            // We skip the 'wait_for_returned_block' here to keep this method
+            // fast and non-blocking for the Offload Worker.
+            if let Some(raw_block) = self.inactive.match_sequence_hash(sequence_hash) {
+                // Consistency check: ensures the block was actually registered before it went inactive
+                assert!(matches!(raw_block.state(), BlockState::Registered(_, _)));
+
+                let mutable = MutableBlock::new(raw_block, self.return_tx.clone());
+
+                let immutable = self
+                    .active
+                    .register(mutable)
+                    .expect("unable to register block; should never happen");
+
+                immutable_blocks.push(immutable);
+            }
         }
 
         immutable_blocks

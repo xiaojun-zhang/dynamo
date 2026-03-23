@@ -469,7 +469,7 @@ impl<Locality: LocalityProvider + 'static, Metadata: BlockMetadata>
 
             // Perform the single bulk lookup for all missing blocks
             if !lookup_hashes.is_empty() {
-                let found_blocks = source_pool.match_sequence_hashes(&lookup_hashes).await?;
+                let found_blocks = source_pool.find_blocks_with_hashes(&lookup_hashes).await?;
                 // Match found blocks back to their requests
                 // (Assuming match_sequence_hashes returns blocks in the order requested)
                 for (req, _idx) in lookup_indices {
@@ -489,7 +489,7 @@ impl<Locality: LocalityProvider + 'static, Metadata: BlockMetadata>
 
             // Bulk check for existing blocks in target
             let target_hashes: Vec<_> = final_requests.iter().map(|r| r.sequence_hash).collect();
-            if let Ok(existing) = target_pool.match_sequence_hashes(&target_hashes).await {
+            if let Ok(existing) = target_pool.find_blocks_with_hashes(&target_hashes).await {
                 if !existing.is_empty() {
                     let existing_set: BTreeSet<_> =
                         existing.iter().map(|b| b.sequence_hash()).collect();
