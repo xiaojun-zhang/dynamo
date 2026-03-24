@@ -36,7 +36,7 @@ from dynamo.common.utils.video_utils import (
     normalize_video_frames,
     parse_size,
 )
-from dynamo.vllm.omni.audio_handler import AudioHandlerMixin
+from dynamo.vllm.omni.audio_handler import AudioGenerationHandler
 from dynamo.vllm.omni.base_handler import BaseOmniHandler
 
 logger = logging.getLogger(__name__)
@@ -66,11 +66,11 @@ class EngineInputs:
     response_format: str | None = None
 
 
-class OmniHandler(AudioHandlerMixin, BaseOmniHandler):
+class OmniHandler(BaseOmniHandler):
     """Unified handler for multi-stage pipelines using vLLM-Omni.
 
     Handles text-to-text, text-to-image, text-to-video, and text-to-audio generation.
-    Audio/TTS methods are provided by AudioHandlerMixin.
+    Audio/TTS logic is delegated to AudioGenerationHandler via composition.
     """
 
     def __init__(
@@ -103,20 +103,13 @@ class OmniHandler(AudioHandlerMixin, BaseOmniHandler):
         self.media_output_http_url = media_output_http_url
         self._image_loader = ImageLoader()
 
-        # Cache TTS capabilities from model config (once at init, reused per request).
-        # Mirrors vLLM-Omni's OmniOpenAIServingSpeech.__init__().
-        self._tts_supported_speakers: set = self._load_supported_speakers()
-        self._tts_supported_languages: set = self._load_supported_languages()
-        if self._tts_supported_speakers:
-            logger.info(
-                f"Loaded {len(self._tts_supported_speakers)} TTS speakers: "
-                f"{sorted(self._tts_supported_speakers)}"
-            )
-        if self._tts_supported_languages:
-            logger.info(
-                f"Loaded {len(self._tts_supported_languages)} TTS languages: "
-                f"{sorted(self._tts_supported_languages)}"
-            )
+        # Audio/TTS handler — composition, not inheritance.
+        self._audio_handler = AudioGenerationHandler(
+            config=config,
+            engine_client=self.engine_client,
+            media_output_fs=media_output_fs,
+            media_output_http_url=media_output_http_url,
+        )
 
     async def generate(
         self, request: Dict[str, Any], context: Context
@@ -235,7 +228,7 @@ class OmniHandler(AudioHandlerMixin, BaseOmniHandler):
                     elif stage_output.final_output_type == "audio":
                         mm_output = stage_output.multimodal_output
                         if mm_output:
-                            chunk = await self._format_audio_chunk(
+                            chunk = await self._audio_handler._format_audio_chunk(
                                 mm_output,
                                 request_id,
                                 response_format=inputs.response_format,
@@ -284,7 +277,7 @@ class OmniHandler(AudioHandlerMixin, BaseOmniHandler):
             assert isinstance(parsed_request, NvCreateVideoRequest)
             return self._engine_inputs_from_video(parsed_request, image=image)
         elif request_type == RequestType.AUDIO_GENERATION:
-            return await self._engine_inputs_from_audio(parsed_request)
+            return await self._audio_handler._engine_inputs_from_audio(parsed_request)
 
         raise ValueError(f"Unknown request type: {request_type}")
 

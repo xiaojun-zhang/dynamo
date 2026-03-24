@@ -49,15 +49,36 @@ _TTS_LANGUAGES_FALLBACK = {
 }
 
 
-class AudioHandlerMixin:
-    """Mixin providing audio/TTS methods for OmniHandler.
+class AudioGenerationHandler:
+    """Handles audio/TTS request processing for the vLLM-Omni backend.
 
-    Requires the host class to provide:
-    - self.config (with tts_* fields from OmniConfig)
-    - self.engine_client (AsyncOmni instance)
-    - self.media_output_fs / self.media_output_http_url
-    - self._error_chunk(request_id, msg, request_type)
+    Instantiated by OmniHandler during initialization and held as a
+    composition attribute (``self._audio_handler``).  This keeps
+    audio-specific logic (validation, prompt building, encoding) out
+    of the orchestrator.
     """
+
+    def __init__(self, config, engine_client, media_output_fs, media_output_http_url):
+        self.config = config
+        self.engine_client = engine_client
+        self.media_output_fs = media_output_fs
+        self.media_output_http_url = media_output_http_url
+
+        # Cache TTS capabilities from model config at init.
+        self._tts_supported_speakers: set = self._load_supported_speakers()
+        self._tts_supported_languages: set = self._load_supported_languages()
+        if self._tts_supported_speakers:
+            logger.info(
+                "Loaded %d TTS speakers: %s",
+                len(self._tts_supported_speakers),
+                sorted(self._tts_supported_speakers),
+            )
+        if self._tts_supported_languages:
+            logger.info(
+                "Loaded %d TTS languages: %s",
+                len(self._tts_supported_languages),
+                sorted(self._tts_supported_languages),
+            )
 
     # -- TTS capability loading from model config -----------------------------
 
@@ -452,9 +473,13 @@ class AudioHandlerMixin:
     ) -> Dict[str, Any] | None:
         """Format multimodal audio output for the response."""
         if not mm_output:
-            return self._error_chunk(
-                request_id, "No audio generated", RequestType.AUDIO_GENERATION
-            )
+            return NvAudioSpeechResponse(
+                id=request_id,
+                model=self.config.served_model_name or self.config.model,
+                status="failed",
+                created=int(time.time()),
+                error="No audio generated",
+            ).model_dump()
 
         try:
             start_time = time.time()

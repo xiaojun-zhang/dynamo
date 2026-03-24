@@ -119,16 +119,26 @@ class TestBuildEngineInputs:
         assert inputs.prompt["prompt"] == "a drone"
         assert inputs.fps > 0
 
-    def test_audio_generation(self):
-        """Audio request parses input text and voice into engine inputs."""
+    @pytest.mark.asyncio
+    async def test_audio_generation_delegates_to_audio_handler(self):
+        """Audio request delegates to _audio_handler."""
         handler = _make_handler()
-        req = NvCreateAudioSpeechRequest(
-            model="test-tts", input="Hello world", voice="vivian"
+        expected = EngineInputs(
+            prompt={"prompt": "Hello world"},
+            request_type=RequestType.AUDIO_GENERATION,
         )
-        inputs = handler.build_engine_inputs(req, RequestType.AUDIO_GENERATION)
+
+        async def mock_engine_inputs(req):
+            return expected
+
+        handler._audio_handler = MagicMock()
+        handler._audio_handler._engine_inputs_from_audio = mock_engine_inputs
+        inputs = await handler.build_engine_inputs(
+            NvCreateAudioSpeechRequest(input="Hello world"),
+            RequestType.AUDIO_GENERATION,
+        )
         assert inputs.request_type == RequestType.AUDIO_GENERATION
         assert inputs.prompt["prompt"] == "Hello world"
-        assert inputs.sampling_params_list is None
 
 
 class TestFormatTextChunk:
