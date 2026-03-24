@@ -11,7 +11,6 @@ try:
     from dynamo.common.protocols.audio_protocol import NvCreateAudioSpeechRequest
     from dynamo.common.utils.output_modalities import RequestType
     from dynamo.vllm.omni.audio_handler import AudioGenerationHandler
-    from dynamo.vllm.omni.omni_handler import EngineInputs
 except ImportError:
     pytest.skip("vLLM omni dependencies not available", allow_module_level=True)
 
