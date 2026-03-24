@@ -415,24 +415,23 @@ impl<Locality: LocalityProvider + 'static, Metadata: BlockMetadata>
                 return Ok(());
             }
 
+            // Try to check the offload queue.
             while let Ok(request) = offload_rx.try_recv() {
                 queue.insert(request);
             }
 
             if queue.is_empty() {
+                // Await the next request.
                 tokio::select! {
                     _ = cancellation_token.cancelled() => return Ok(()),
-                    maybe_request = offload_rx.recv() => {
-                        match maybe_request {
-                            Some(request) => { queue.insert(request); }
-                            None => return Ok(()),
-                        }
+                    Some(request) = offload_rx.recv() => {
+                        queue.insert(request);
                     }
                 }
                 continue;
             }
 
-            // 1. Batch collection
+            // 1. Collect Batch Candidates
             let mut candidates = Vec::with_capacity(max_transfer_batch_size());
             while candidates.len() < max_transfer_batch_size() {
                 if let Some(req) = queue.pop_first() {
@@ -442,101 +441,92 @@ impl<Locality: LocalityProvider + 'static, Metadata: BlockMetadata>
                 }
             }
 
-            // 2. Batch Validation & Target Check
-            let mut final_requests = Vec::with_capacity(candidates.len());
-            let mut final_sources = Vec::with_capacity(candidates.len());
+            // 2. Bulk Source Resolution
+            // We separate blocks into "immediate upgrade" and "need pool lookup"
+            let mut resolved_requests = Vec::with_capacity(candidates.len());
+            let mut resolved_sources = Vec::with_capacity(candidates.len());
             let mut lookup_hashes = Vec::new();
             let mut lookup_indices = Vec::new();
 
             for (i, req) in candidates.into_iter().enumerate() {
-                // Apply filter check early
-                if let Some(ref filter) = offload_filter {
-                    if !filter.should_offload(req.sequence_hash) {
-                        continue;
-                    }
-                }
-
-                // Try fast upgrade
-                if let Some(b) = req.block.upgrade() {
-                    final_requests.push(req);
-                    final_sources.push(ImmutableBlock::new(b));
+                if let Some(arc) = req.block.upgrade() {
+                    resolved_requests.push(req);
+                    resolved_sources.push(ImmutableBlock::new(arc));
                 } else {
-                    // If upgrade fails, queue for bulk lookup
                     lookup_hashes.push(req.sequence_hash);
-                    lookup_indices.push((req, i));
+                    lookup_indices.push(req);
                 }
             }
 
-            // Perform the single bulk lookup for all missing blocks
             if !lookup_hashes.is_empty() {
-                let found_blocks = source_pool.find_blocks_with_hashes(&lookup_hashes).await?;
-                // Match found blocks back to their requests
-                // (Assuming match_sequence_hashes returns blocks in the order requested)
-                for (req, _idx) in lookup_indices {
-                    if let Some(b) = found_blocks
-                        .iter()
-                        .find(|b| b.sequence_hash() == req.sequence_hash)
-                    {
-                        final_requests.push(req);
-                        final_sources.push(b.clone());
+                let found = source_pool.find_blocks_with_hashes(&lookup_hashes).await?;
+                for req in lookup_indices {
+                    if let Some(b) = found.iter().find(|b| b.sequence_hash() == req.sequence_hash) {
+                        resolved_requests.push(req);
+                        resolved_sources.push(b.clone());
                     }
                 }
             }
 
-            if final_requests.is_empty() {
-                continue;
-            }
+            if resolved_sources.is_empty() { continue; }
 
-            // Bulk check for existing blocks in target
-            let target_hashes: Vec<_> = final_requests.iter().map(|r| r.sequence_hash).collect();
-            if let Ok(existing) = target_pool.find_blocks_with_hashes(&target_hashes).await {
-                if !existing.is_empty() {
-                    let existing_set: BTreeSet<_> =
-                        existing.iter().map(|b| b.sequence_hash()).collect();
-                    let mut i = 0;
-                    while i < final_requests.len() {
-                        if existing_set.contains(&final_requests[i].sequence_hash) {
-                            final_requests.remove(i);
-                            final_sources.remove(i);
-                        } else {
-                            i += 1;
-                        }
+            // 3. Bulk Target existence check
+            // One IPC call to check if the target pool already has these blocks
+            let all_hashes: Vec<_> = resolved_requests.iter().map(|r| r.sequence_hash).collect();
+            let existing_in_target = target_pool.find_blocks_with_hashes(&all_hashes).await?;
+
+            if !existing_in_target.is_empty() {
+                let existing_set: BTreeSet<_> = existing_in_target.iter().map(|b| b.sequence_hash()).collect();
+                let mut i = 0;
+                while i < resolved_requests.len() {
+                    if existing_set.contains(&resolved_requests[i].sequence_hash) {
+                        resolved_requests.remove(i);
+                        resolved_sources.remove(i);
+                    } else {
+                        i += 1;
                     }
                 }
             }
 
-            if final_requests.is_empty() {
-                continue;
+            // 4. Final Filter Check
+            if let Some(ref filter) = offload_filter {
+                let mut i = 0;
+                while i < resolved_requests.len() {
+                    if !filter.should_offload(resolved_requests[i].sequence_hash) {
+                        resolved_requests.remove(i);
+                        resolved_sources.remove(i);
+                    } else {
+                        i += 1;
+                    }
+                }
             }
 
-            // Allocation and Transfer
-            let allocation_result = target_pool.allocate_blocks(final_requests.len()).await;
+            if resolved_sources.is_empty() { continue; }
 
-            let (dispatch_sources, dispatch_targets) = match allocation_result {
-                Ok(targets) => (final_sources, targets),
+            // 5. Bulk Allocation and Transfer
+            let allocation_result = target_pool.allocate_blocks(resolved_sources.len()).await;
+            let final_targets = match allocation_result {
+                Ok(blocks) => blocks,
                 Err(BlockPoolError::NotEnoughBlocksAvailable(_, available)) if available > 0 => {
-                    let sources = final_sources.drain(..available).collect();
-                    let targets = target_pool.allocate_blocks(available).await?;
-                    (sources, targets)
+                    resolved_sources.truncate(available);
+                    target_pool.allocate_blocks(available).await?
                 }
                 Err(_) => {
-                    tracing::warn!("Target pool full. Skipping offload batch.");
+                    tracing::warn!("Target pool full. Dropping offload batch.");
                     continue;
                 }
             };
 
             if let Some(ref metric) = offload_metric {
-                metric.inc_by(dispatch_targets.len() as u64);
+                metric.inc_by(final_targets.len() as u64);
             }
 
-            transfer_manager
-                .enqueue_transfer(PendingTransfer::new(
-                    dispatch_sources,
-                    dispatch_targets,
-                    None,
-                    target_pool.clone(),
-                ))
-                .await?;
+            transfer_manager.enqueue_transfer(PendingTransfer::new(
+                resolved_sources,
+                final_targets,
+                None,
+                target_pool.clone(),
+            )).await?;
         }
     }
 
