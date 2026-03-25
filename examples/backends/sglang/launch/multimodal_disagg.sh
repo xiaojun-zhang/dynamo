@@ -87,13 +87,7 @@ DYN_ENCODE_GPU_MEM=${DYN_ENCODE_GPU_MEM:-0.9}
 DYN_PREFILL_GPU_MEM=${DYN_PREFILL_GPU_MEM:-0.9}
 DYN_DECODE_GPU_MEM=${DYN_DECODE_GPU_MEM:-0.9}
 
-# Profiler override: scale prefill/decode fractions proportionally.
-# Encode worker has no --mem-fraction-static in single-gpu mode, so it's unaffected.
-if [[ -n "${_PROFILE_PYTEST_VRAM_FRAC_OVERRIDE:-}" && "$SINGLE_GPU" == "true" ]]; then
-    _TOTAL_FRAC=$(awk -v p="$DYN_PREFILL_GPU_MEM" -v d="$DYN_DECODE_GPU_MEM" 'BEGIN { printf "%.4f", p + d }')
-    DYN_PREFILL_GPU_MEM=$(awk -v o="$_PROFILE_PYTEST_VRAM_FRAC_OVERRIDE" -v p="$DYN_PREFILL_GPU_MEM" -v t="$_TOTAL_FRAC" 'BEGIN { printf "%.2f", o * p / t }')
-    DYN_DECODE_GPU_MEM=$(awk -v o="$_PROFILE_PYTEST_VRAM_FRAC_OVERRIDE" -v d="$DYN_DECODE_GPU_MEM" -v t="$_TOTAL_FRAC" 'BEGIN { printf "%.2f", o * d / t }')
-fi
+GPU_MEM_ARGS=$(build_gpu_mem_args sglang --workers-per-gpu 3)
 
 ENCODE_EXTRA_ARGS=""
 PREFILL_EXTRA_ARGS=""
@@ -104,8 +98,8 @@ if [[ "$SINGLE_GPU" == "true" ]]; then
     # functional-test size so the last worker can initialize without OOM.
     # --context-length keeps the per-request token pool allocation small.
     ENCODE_EXTRA_ARGS=""
-    PREFILL_EXTRA_ARGS="--mem-fraction-static ${DYN_PREFILL_GPU_MEM} --delete-ckpt-after-loading --max-running-requests 2 --context-length 2048 --max-total-tokens 1024"
-    DECODE_EXTRA_ARGS="--mem-fraction-static ${DYN_DECODE_GPU_MEM} --delete-ckpt-after-loading --max-running-requests 2 --context-length 2048 --max-total-tokens 1024"
+    PREFILL_EXTRA_ARGS="--mem-fraction-static ${DYN_PREFILL_GPU_MEM} --delete-ckpt-after-loading --max-running-requests 2 --context-length 2048 --max-total-tokens 1024 $GPU_MEM_ARGS"
+    DECODE_EXTRA_ARGS="--mem-fraction-static ${DYN_DECODE_GPU_MEM} --delete-ckpt-after-loading --max-running-requests 2 --context-length 2048 --max-total-tokens 1024 $GPU_MEM_ARGS"
 fi
 
 # Prevent port collisions: the test framework exports DYN_SYSTEM_PORT which all

@@ -3,9 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Disaggregated prefill/decode on a SINGLE GPU.
-# Per-worker VRAM is estimated from model parameters below. Override individual
-# knobs (CONTEXT_LENGTH, MAX_RUNNING_REQUESTS) via env vars, or set
-# _PROFILE_PYTEST_VRAM_FRAC_OVERRIDE to bypass the calculation entirely.
+# Per-worker VRAM is controlled via build_gpu_mem_args (see gpu_utils.sh).
+# Override individual knobs (CONTEXT_LENGTH, MAX_RUNNING_REQUESTS) via env vars.
 #
 # Measured reference (Qwen/Qwen3-0.6B, --context-length 4096, RTX 6000 Ada 48 GiB):
 #   estimate (from gpu_utils.sh) : ~5.7 GiB per worker (w=1.1 + kv=0.9 + oh=3.7)
@@ -26,7 +25,7 @@ MODEL="Qwen/Qwen3-0.6B"
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-4096}"
 MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS:-2}"
 
-GPU_MEM_FRACTION=$(build_gpu_mem_args sglang --model "$MODEL" --max-model-len "$CONTEXT_LENGTH" --max-num-seqs "$MAX_RUNNING_REQUESTS" --workers-per-gpu 2)
+GPU_MEM_ARGS=$(build_gpu_mem_args sglang --workers-per-gpu 2)
 
 source "$SCRIPT_DIR/../../../common/launch_utils.sh"
 
@@ -50,7 +49,7 @@ python3 -m dynamo.sglang \
   --disaggregation-bootstrap-port 12345 \
   --host 0.0.0.0 \
   --disaggregation-transfer-backend nixl \
-  --mem-fraction-static "${GPU_MEM_FRACTION}" \
+  $GPU_MEM_ARGS \
   --context-length "$CONTEXT_LENGTH" \
   --chunked-prefill-size "$CONTEXT_LENGTH" \
   --max-prefill-tokens "$CONTEXT_LENGTH" \
@@ -80,7 +79,7 @@ python3 -m dynamo.sglang \
   --disaggregation-bootstrap-port 12345 \
   --host 0.0.0.0 \
   --disaggregation-transfer-backend nixl \
-  --mem-fraction-static "${GPU_MEM_FRACTION}" \
+  $GPU_MEM_ARGS \
   --context-length "$CONTEXT_LENGTH" \
   --chunked-prefill-size "$CONTEXT_LENGTH" \
   --max-prefill-tokens "$CONTEXT_LENGTH" \

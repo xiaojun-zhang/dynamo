@@ -22,8 +22,19 @@ from tests.utils.port_utils import (
     deallocate_ports,
 )
 from tests.utils.test_output import resolve_test_output_path
+from tests.utils.vram_utils import (
+    auto_worker_count,
+    detect_gpus,
+    print_gpu_plan,
+    write_test_meta,
+)
 
 _logger = logging.getLogger(__name__)
+
+# Typed stash keys for GPU-parallel config (avoids setting unknown attrs on Config)
+_gpu_parallel_gpus_key: pytest.StashKey[list[dict]] = pytest.StashKey()
+_gpu_indices_key: pytest.StashKey[list[int] | None] = pytest.StashKey()
+_gpu_slots_key: pytest.StashKey[int | None] = pytest.StashKey()
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -59,7 +70,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--max-vram-gib",
         type=float,
         default=None,
-        help="Skip tests whose @pytest.mark.max_vram_gib(N) exceeds this value (GiB).",
+        help="Only run tests with @pytest.mark.profiled_vram_gib(N) that fit in N GiB. "
+        "Without -n: runs tests sequentially. "
+        "With -n N: runs N tests concurrently as subprocesses with VRAM-aware scheduling. "
+        "With -n auto: calculates max concurrent slots from GPU VRAM / max_vram_gib.",
+    )
+    parser.addoption(
+        "--gpus",
+        type=str,
+        default="all",
+        help="Comma-separated GPU indices or 'all' (default: all). "
+        "Controls which GPUs the parallel test runner distributes tests across.",
     )
     parser.addoption(
         "--dry-run",
@@ -77,6 +98,90 @@ logging.basicConfig(
     format=LOG_FORMAT,
     datefmt=DATE_FORMAT,  # ISO 8601 UTC format
 )
+
+
+# ---------------------------------------------------------------------------
+# GPU-Parallel: detect GPUs and configure xdist workers
+# ---------------------------------------------------------------------------
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Detect GPUs for --max-vram-gib planning and parallel execution."""
+    vram_limit = config.getoption("max_vram_gib", default=None)
+    if vram_limit is None:
+        return
+    gpus = detect_gpus()
+    if gpus:
+        config.stash[_gpu_parallel_gpus_key] = gpus
+
+    # Parse --gpus into a list of indices (or None for all)
+    gpus_raw = config.getoption("gpus", default="all")
+    if gpus_raw and gpus_raw.strip().lower() != "all":
+        from tests.utils.pytest_parallel_gpu import _parse_gpu_indices
+
+        config.stash[_gpu_indices_key] = _parse_gpu_indices(gpus_raw, gpus)
+        selected_gpus = [
+            g for g in gpus if g["index"] in config.stash[_gpu_indices_key]
+        ]
+    else:
+        config.stash[_gpu_indices_key] = None  # all GPUs
+        selected_gpus = gpus
+
+    # If -n is set with --max-vram-gib, save the slot count and disable xdist
+    # so our subprocess orchestrator handles parallelism instead.
+    # xdist's pytest_configure(trylast=True) checks _is_distribution_mode()
+    # which reads dist/tx (not numprocesses), so we must also clear dist.
+    numproc = config.getoption("numprocesses", default=None)
+    if numproc is not None and numproc != 0:
+        if isinstance(numproc, str) or numproc == -1:
+            config.stash[_gpu_slots_key] = (
+                auto_worker_count(selected_gpus, vram_limit) if selected_gpus else 1
+            )
+        else:
+            config.stash[_gpu_slots_key] = int(numproc)
+        config.option.numprocesses = 0
+        config.option.dist = "no"
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtestloop(session: pytest.Session) -> bool | None:
+    """Intercept the test loop for GPU-parallel execution.
+
+    When --max-vram-gib and -n are both present, run tests as independent
+    subprocesses via the GPU orchestrator instead of the normal pytest loop.
+    Must run before the default pytest loop (tryfirst) so we can return True
+    to prevent the default sequential execution.
+    """
+    config = session.config
+    num_slots = config.stash.get(_gpu_slots_key, None)
+    vram_limit = config.getoption("max_vram_gib", default=None)
+
+    if num_slots is None or vram_limit is None:
+        return None  # let normal pytest handle it
+
+    from tests.utils.pytest_parallel_gpu import run_parallel
+    from tests.utils.vram_utils import load_test_meta
+
+    # Collect test IDs from the already-filtered session items
+    test_ids = [item.nodeid for item in session.items]
+    if not test_ids:
+        return True
+
+    meta = load_test_meta()
+    is_stream = config.getoption("capture", default="fd") == "no"
+    gpu_indices = config.stash.get(_gpu_indices_key, None)
+    rc = run_parallel(
+        test_ids=test_ids,
+        meta=meta,
+        max_vram_gib=vram_limit,
+        num_slots=num_slots,
+        gpu_indices=gpu_indices,
+        stream=is_stream,
+    )
+
+    if rc != 0:
+        session.testsfailed = 1
+    return True  # we handled the test loop
 
 
 @pytest.fixture()
@@ -205,8 +310,10 @@ def _enable_offline_with_mistral_patch():
     except (ImportError, AttributeError):
         return  # transformers version without _patch_mistral_regex — nothing to do
 
-    # Write a sitecustomize.py so subprocesses also get the patch
-    patch_dir = os.path.join(tempfile.gettempdir(), "dynamo_test_hf_patch")
+    # Write a sitecustomize.py so subprocesses also get the patch.
+    # Use a per-worker dir under xdist to avoid write races.
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    patch_dir = os.path.join(tempfile.gettempdir(), f"dynamo_test_hf_patch_{worker_id}")
     os.makedirs(patch_dir, exist_ok=True)
     with open(os.path.join(patch_dir, "sitecustomize.py"), "w") as f:
         f.write(
@@ -239,26 +346,33 @@ def _enable_offline_with_mistral_patch():
 def _disable_offline_with_mistral_patch():
     """Undo _enable_offline_with_mistral_patch."""
     os.environ.pop("HF_HUB_OFFLINE", None)
-    patch_dir = os.path.join(tempfile.gettempdir(), "dynamo_test_hf_patch")
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    patch_dir = os.path.join(tempfile.gettempdir(), f"dynamo_test_hf_patch_{worker_id}")
     pythonpath = os.environ.get("PYTHONPATH", "")
     os.environ["PYTHONPATH"] = pythonpath.replace(f"{patch_dir}:", "").replace(
         patch_dir, ""
     )
 
 
+_download_lock_path = os.path.join(tempfile.gettempdir(), "pytest_model_download.lock")
+
+
 @pytest.fixture(scope="session")
 def predownload_models(pytestconfig):
-    """Fixture wrapper around download_models for models used in collected tests"""
-    # Get models from pytest config if available, otherwise fall back to TEST_MODELS
+    """Fixture wrapper around download_models for models used in collected tests.
+
+    Uses a file lock so that under xdist, only one worker downloads at a time
+    and the rest reuse the HuggingFace cache.
+    """
     models = getattr(pytestconfig, "models_to_download", None)
-    if models:
-        logging.info(
-            f"Downloading {len(models)} models needed for collected tests\nModels: {models}"
-        )
-        download_models(model_list=list(models))
-    else:
-        # Fallback to original behavior if extraction failed
-        download_models()
+    with FileLock(_download_lock_path):
+        if models:
+            logging.info(
+                f"Downloading {len(models)} models needed for collected tests\nModels: {models}"
+            )
+            download_models(model_list=list(models))
+        else:
+            download_models()
 
     _enable_offline_with_mistral_patch()
     yield
@@ -267,21 +381,20 @@ def predownload_models(pytestconfig):
 
 @pytest.fixture(scope="session")
 def predownload_tokenizers(pytestconfig):
-    """Fixture wrapper around download_models for tokenizers used in collected tests"""
-    # Get models from pytest config if available, otherwise fall back to TEST_MODELS
-    models = getattr(pytestconfig, "models_to_download", None)
-    if models:
-        logging.info(
-            f"Downloading tokenizers for {len(models)} models needed for collected tests\nModels: {models}"
-        )
-        download_models(model_list=list(models), ignore_weights=True)
-    else:
-        # Fallback to original behavior if extraction failed
-        download_models(ignore_weights=True)
+    """Fixture wrapper around download_models for tokenizers used in collected tests.
 
-    # Skip redundant HuggingFace API calls in worker subprocesses since
-    # tokenizers are already cached. This avoids flaky timeouts from slow
-    # HF API responses (the RepoInfo fetch still happens even for cached models).
+    Uses a file lock so that under xdist, only one worker downloads at a time.
+    """
+    models = getattr(pytestconfig, "models_to_download", None)
+    with FileLock(_download_lock_path):
+        if models:
+            logging.info(
+                f"Downloading tokenizers for {len(models)} models needed for collected tests\nModels: {models}"
+            )
+            download_models(model_list=list(models), ignore_weights=True)
+        else:
+            download_models(ignore_weights=True)
+
     _enable_offline_with_mistral_patch()
     yield
     _disable_offline_with_mistral_patch()
@@ -337,24 +450,36 @@ def pytest_collection_modifyitems(config, items):
                 if _item_has_marker(item, marker_name):
                     item.add_marker(skip)
 
-    # Skip tests that exceed --max-vram-gib
+    # Deselect tests based on --max-vram-gib:
+    #   - Tests whose profiled VRAM exceeds the limit are removed
+    #   - Tests WITHOUT a VRAM marker are also removed (unknown VRAM = unsafe)
+    # Using deselect (not skip) so they never reach the xdist scheduler.
     vram_limit = config.getoption("--max-vram-gib", default=None)
     if vram_limit is not None:
-        skip_vram = pytest.mark.skip(
-            reason=f"requires more than {vram_limit} GiB VRAM (--max-vram-gib={vram_limit})"
-        )
+        keep = []
+        deselected = []
         for item in items:
-            vram_mark = item.get_closest_marker("max_vram_gib")
-            if vram_mark and vram_mark.args and vram_mark.args[0] > vram_limit:
-                item.add_marker(skip_vram)
+            vram_mark = item.get_closest_marker("profiled_vram_gib")
+            if vram_mark and vram_mark.args and vram_mark.args[0] <= vram_limit:
+                keep.append(item)
+            else:
+                deselected.append(item)
+        if deselected:
+            config.hook.pytest_deselected(items=deselected)
+            items[:] = keep
 
-    # --dry-run: print run/skip breakdown and exit without executing tests
+    # Write test metadata for the GPU orchestrator to read.
+    if vram_limit is not None:
+        write_test_meta(items)
+
+    # --dry-run: print run/skip breakdown and exit without executing tests.
+    # At this point, items only contains tests that passed --max-vram-gib
+    # filtering (deselected items were already removed above).
     if config.getoption("--dry-run", default=False):
         would_run = []
         would_skip = []
-        unmarked = []
         for item in items:
-            vram_mark = item.get_closest_marker("max_vram_gib")
+            vram_mark = item.get_closest_marker("profiled_vram_gib")
             vram_val = vram_mark.args[0] if vram_mark and vram_mark.args else None
             name = item.nodeid.split("::", 1)[1] if "::" in item.nodeid else item.nodeid
 
@@ -365,39 +490,28 @@ def pytest_collection_modifyitems(config, items):
                     reason = marker.args[0]
                 skip_reasons.append(reason or "no reason given")
 
-            vram_skipped = (
-                vram_limit is not None
-                and vram_val is not None
-                and vram_val > vram_limit
-            )
-            if vram_skipped:
-                skip_reasons.insert(0, f"{vram_val} GiB > {vram_limit} GiB VRAM limit")
-
             if skip_reasons:
                 would_skip.append((name, vram_val, skip_reasons))
-            elif vram_val is not None:
-                would_run.append((name, vram_val))
             else:
-                unmarked.append(name)
+                would_run.append((name, vram_val))
 
         print(f"\n{'=' * 60}")
-        print(
-            f"--max-vram-gib={vram_limit or 'not set'}  |  {len(items)} tests selected"
-        )
+        print(f"--max-vram-gib={vram_limit or 'not set'}  |  {len(items)} tests")
         print(f"{'=' * 60}")
         if would_run:
             print(f"\nWould RUN ({len(would_run)}):")
             for name, gib in would_run:
-                print(f"  {name}  ({gib} GiB)")
+                gib_str = f"  ({gib} GiB)" if gib is not None else ""
+                print(f"  {name}{gib_str}")
         if would_skip:
             print(f"\nWould SKIP ({len(would_skip)}):")
             for name, vram_val, reasons in would_skip:
                 vram_str = f"  ({vram_val} GiB)" if vram_val is not None else ""
                 print(f"  {name}{vram_str}  -- {'; '.join(reasons)}")
-        if unmarked:
-            print(f"\nNo VRAM marker — always run ({len(unmarked)}):")
-            for name in unmarked:
-                print(f"  {name}")
+
+        gpus = config.stash.get(_gpu_parallel_gpus_key, None)
+        if gpus and vram_limit is not None:
+            print_gpu_plan(gpus, vram_limit, would_run)
         print()
         items.clear()
         return

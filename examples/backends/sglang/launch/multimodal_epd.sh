@@ -79,20 +79,14 @@ DYN_WORKER_GPU=${DYN_WORKER_GPU:-1}
 DYN_ENCODE_GPU_MEM=${DYN_ENCODE_GPU_MEM:-0.9}
 DYN_WORKER_GPU_MEM=${DYN_WORKER_GPU_MEM:-0.9}
 
-# Profiler override: split _PROFILE_PYTEST_VRAM_FRAC_OVERRIDE between workers
-# preserving the ratio set by the env vars.
-if [[ -n "${_PROFILE_PYTEST_VRAM_FRAC_OVERRIDE:-}" && "$SINGLE_GPU" == "true" ]]; then
-    _TOTAL_FRAC=$(awk -v e="$DYN_ENCODE_GPU_MEM" -v w="$DYN_WORKER_GPU_MEM" 'BEGIN { printf "%.4f", e + w }')
-    DYN_ENCODE_GPU_MEM=$(awk -v o="$_PROFILE_PYTEST_VRAM_FRAC_OVERRIDE" -v e="$DYN_ENCODE_GPU_MEM" -v t="$_TOTAL_FRAC" 'BEGIN { printf "%.2f", o * e / t }')
-    DYN_WORKER_GPU_MEM=$(awk -v o="$_PROFILE_PYTEST_VRAM_FRAC_OVERRIDE" -v w="$DYN_WORKER_GPU_MEM" -v t="$_TOTAL_FRAC" 'BEGIN { printf "%.2f", o * w / t }')
-fi
+GPU_MEM_ARGS=$(build_gpu_mem_args sglang --workers-per-gpu 2)
 
 ENCODE_EXTRA_ARGS=""
 WORKER_EXTRA_ARGS=""
 
 if [[ "$SINGLE_GPU" == "true" ]]; then
     ENCODE_EXTRA_ARGS="--mem-fraction-static ${DYN_ENCODE_GPU_MEM}"
-    WORKER_EXTRA_ARGS="--mem-fraction-static ${DYN_WORKER_GPU_MEM} --delete-ckpt-after-loading --max-running-requests 2 --chunked-prefill-size 4096 --max-prefill-tokens 4096"
+    WORKER_EXTRA_ARGS="--mem-fraction-static ${DYN_WORKER_GPU_MEM} --delete-ckpt-after-loading --max-running-requests 2 --chunked-prefill-size 4096 --max-prefill-tokens 4096 $GPU_MEM_ARGS"
 fi
 
 # Prevent port collisions: the test framework exports DYN_SYSTEM_PORT which all
