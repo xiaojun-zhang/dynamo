@@ -104,7 +104,7 @@ class OmniHandler(BaseOmniHandler):
         self._image_loader = ImageLoader()
 
         # Audio/TTS handler — composition, not inheritance.
-        self._audio_handler = AudioGenerationHandler(
+        self.audio = AudioGenerationHandler(
             config=config,
             engine_client=self.engine_client,
             media_output_fs=media_output_fs,
@@ -228,7 +228,7 @@ class OmniHandler(BaseOmniHandler):
                     elif stage_output.final_output_type == "audio":
                         mm_output = stage_output.multimodal_output
                         if mm_output:
-                            chunk = await self._audio_handler._format_audio_chunk(
+                            chunk = await self.audio.format_output(
                                 mm_output,
                                 request_id,
                                 response_format=inputs.response_format,
@@ -277,7 +277,7 @@ class OmniHandler(BaseOmniHandler):
             assert isinstance(parsed_request, NvCreateVideoRequest)
             return self._engine_inputs_from_video(parsed_request, image=image)
         elif request_type == RequestType.AUDIO_GENERATION:
-            return await self._audio_handler._engine_inputs_from_audio(parsed_request)
+            return await self.audio.build_engine_inputs(parsed_request)
 
         raise ValueError(f"Unknown request type: {request_type}")
 

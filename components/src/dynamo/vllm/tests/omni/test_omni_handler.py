@@ -120,8 +120,8 @@ class TestBuildEngineInputs:
         assert inputs.fps > 0
 
     @pytest.mark.asyncio
-    async def test_audio_generation_delegates_to_audio_handler(self):
-        """Audio request delegates to _audio_handler."""
+    async def test_audio_generation_delegates_toaudio(self):
+        """Audio request delegates to audio."""
         handler = _make_handler()
         expected = EngineInputs(
             prompt={"prompt": "Hello world"},
@@ -131,8 +131,8 @@ class TestBuildEngineInputs:
         async def mock_engine_inputs(req):
             return expected
 
-        handler._audio_handler = MagicMock()
-        handler._audio_handler._engine_inputs_from_audio = mock_engine_inputs
+        handler.audio = MagicMock()
+        handler.audio.build_engine_inputs = mock_engine_inputs
         inputs = await handler.build_engine_inputs(
             NvCreateAudioSpeechRequest(input="Hello world"),
             RequestType.AUDIO_GENERATION,

@@ -159,7 +159,7 @@ class TestIsTtsModel:
 
 
 class TestEngineInputsFromAudio:
-    """Tests for _engine_inputs_from_audio."""
+    """Tests for build_engine_inputs."""
 
     @pytest.mark.asyncio
     async def test_generic_path_for_non_tts(self):
@@ -170,7 +170,7 @@ class TestEngineInputsFromAudio:
         handler.engine_client.stage_list = [stage]
 
         req = NvCreateAudioSpeechRequest(input="Hello world")
-        inputs = await handler._engine_inputs_from_audio(req)
+        inputs = await handler.build_engine_inputs(req)
         assert inputs.request_type == RequestType.AUDIO_GENERATION
         assert inputs.prompt["prompt"] == "Hello world"
         assert inputs.sampling_params_list is None
@@ -180,7 +180,7 @@ class TestEngineInputsFromAudio:
         handler = _make_audio_handler()
         req = NvCreateAudioSpeechRequest(input="  ")
         with pytest.raises(ValueError, match="empty"):
-            await handler._engine_inputs_from_audio(req)
+            await handler.build_engine_inputs(req)
 
     @pytest.mark.asyncio
     async def test_speed_propagated(self):
@@ -188,7 +188,7 @@ class TestEngineInputsFromAudio:
         handler = _make_audio_handler()
         handler.engine_client.stage_list = None  # non-TTS path
         req = NvCreateAudioSpeechRequest(input="hello", speed=2.0)
-        inputs = await handler._engine_inputs_from_audio(req)
+        inputs = await handler.build_engine_inputs(req)
         assert inputs.speed == 2.0
 
 
@@ -261,12 +261,12 @@ class TestEncodeAudio:
 
 
 class TestFormatAudioChunk:
-    """Tests for _format_audio_chunk."""
+    """Tests for format_output."""
 
     @pytest.mark.asyncio
     async def test_empty_mm_output_returns_error(self):
         handler = _make_audio_handler()
-        result = await handler._format_audio_chunk({}, "req-1")
+        result = await handler.format_output({}, "req-1")
         assert result["status"] == "failed"
         assert "No audio generated" in result["error"]
 
@@ -276,7 +276,7 @@ class TestFormatAudioChunk:
 
         handler = _make_audio_handler()
         mm = {"audio": np.random.randn(4800).astype(np.float32), "sr": 24000}
-        result = await handler._format_audio_chunk(mm, "req-1")
+        result = await handler.format_output(mm, "req-1")
         assert result["status"] == "completed"
         assert result["object"] == "audio.speech"
         assert len(result["data"]) == 1

@@ -4,7 +4,7 @@
 """Audio/TTS handler utilities for the vLLM-Omni backend.
 
 Extracted from omni_handler.py to keep modality-specific logic separate.
-These methods are mixed into OmniHandler via AudioHandlerMixin.
+OmniHandler holds an instance as ``self.audio`` (composition).
 """
 
 import asyncio
@@ -137,7 +137,7 @@ class AudioGenerationHandler:
 
     # -- Audio engine input construction --------------------------------------
 
-    async def _engine_inputs_from_audio(self, req: NvCreateAudioSpeechRequest):
+    async def build_engine_inputs(self, req: NvCreateAudioSpeechRequest):
         """Build engine inputs for an audio/TTS request.
 
         Two code paths (matching vLLM-Omni serving_speech.py):
@@ -463,7 +463,7 @@ class AudioGenerationHandler:
         sf.write(buf, audio_np, sample_rate, format=sf_format, **kwargs)
         return buf.getvalue(), media_type
 
-    async def _format_audio_chunk(
+    async def format_output(
         self,
         mm_output: Dict[str, Any],
         request_id: str,
