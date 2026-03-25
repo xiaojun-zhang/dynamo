@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import aiohttp
 import nats
+import requests
 
 from dynamo.llm import KvRouter, KvRouterConfig
 from tests.router.helper import (
@@ -584,6 +585,65 @@ def _test_router_query_instance_id(
         logger.info(f"Token count: {result['token_count']}")
 
 
+def _parse_frontend_rejection_metric(
+    metrics_text: str, model_name: str, endpoint: str
+) -> int:
+    """Parse dynamo_frontend_model_rejection_total from Prometheus metrics text.
+
+    Args:
+        metrics_text: Raw Prometheus metrics text
+        model_name: The model name label value
+        endpoint: The endpoint label value (e.g. "chat_completions")
+
+    Returns:
+        The metric count, or 0 if not found
+    """
+    for line in metrics_text.splitlines():
+        if not line.startswith("dynamo_frontend_model_rejection_total{"):
+            continue
+        if f'model="{model_name}"' in line and f'endpoint="{endpoint}"' in line:
+            parts = line.rsplit(None, 1)
+            if len(parts) == 2:
+                try:
+                    return int(float(parts[1]))
+                except ValueError:
+                    pass
+    return 0
+
+
+def _verify_frontend_rejection_metrics(
+    frontend_port: int,
+    model_name: str,
+    endpoint: str,
+    expected_count: int,
+) -> None:
+    """Verify frontend rejection metrics by scraping the /metrics endpoint.
+
+    Args:
+        frontend_port: Port where the frontend /metrics is served
+        model_name: The model name label value
+        endpoint: The endpoint label value (e.g. "chat_completions")
+        expected_count: Expected rejection count to match exactly
+    """
+    metrics_url = f"http://localhost:{frontend_port}/metrics"
+    try:
+        metrics_response = requests.get(metrics_url, timeout=5)
+        metrics_response.raise_for_status()
+    except requests.RequestException as e:
+        raise AssertionError(
+            f"Failed to fetch frontend metrics from {metrics_url}: {e}"
+        )
+
+    metric_count = _parse_frontend_rejection_metric(
+        metrics_response.text, model_name, endpoint
+    )
+    logger.info(f"Frontend rejection metric: model_rejection_total={metric_count}")
+    assert metric_count == expected_count, (
+        f"Frontend model_rejection_total ({metric_count}) does not match "
+        f"expected count ({expected_count})"
+    )
+
+
 def _test_router_overload_503(
     engine_workers,
     block_size: int,
@@ -591,11 +651,23 @@ def _test_router_overload_503(
     frontend_port: int,
     test_payload: dict,
     blocks_threshold: float = 0.2,
+    num_concurrent_requests: int = 50,
+    expected_min_rejections: int = 9,
+    expected_min_successes: int = 1,
 ):
-    """Test that KV router returns 503 when all workers are busy.
+    """Test that the frontend returns 503 when all workers are busy, and verify rejection metrics.
 
-    Assumes engine_workers are already initialized. This function manages router lifecycle.
-    Uses limited resources to intentionally trigger the overload condition.
+    Sends concurrent requests to exhaust worker resources, then verifies:
+    1. Some requests succeed (routed before busy state propagates)
+    2. Most requests are rejected with 503 (worker busy)
+    3. The frontend model_rejection_total metric matches the observed 503 count
+
+    expected_min_rejections and expected_min_successes are minimum thresholds set by the
+    caller based on resource configuration. For example, with num_gpu_blocks=64 and
+    block_size=4, a ~150-token prompt needs ~38 blocks so only 1 request fits at a time.
+    Most of the 50 concurrent requests should be rejected, with a few succeeding during
+    brief windows between scheduler passes. These thresholds should be set well below
+    the theoretical expectation (e.g. 1/5) to account for test environment variations.
 
     Args:
         engine_workers: Backend workers (mocker/vllm) already initialized with __enter__()
@@ -604,11 +676,13 @@ def _test_router_overload_503(
         frontend_port: Port for the frontend HTTP server
         test_payload: Base test payload to send to /v1/chat/completions
         blocks_threshold: Active decode blocks threshold for the router (default 0.2)
+        num_concurrent_requests: Number of concurrent requests to send (default 50)
+        expected_min_rejections: Minimum expected 503 rejections (default 9)
+        expected_min_successes: Minimum expected 200 successes (default 1)
 
     Raises:
-        AssertionError: If 503 response is not received when expected
+        AssertionError: If rejection counts or metrics don't meet expectations
     """
-
     logger.info(
         f"Starting KV router frontend on port {frontend_port} with limited resources"
     )
@@ -622,98 +696,82 @@ def _test_router_overload_503(
     ):
         url = f"http://localhost:{frontend_port}/v1/chat/completions"
 
-        # Custom payload for 503 test with more tokens to consume resources
-        test_payload_503 = {
-            **test_payload,
-            "max_tokens": 50,  # Longer output to consume more blocks
-        }
-
         # First, send one request with retry to ensure system is ready
         logger.info("Sending initial request to ensure system is ready...")
-        asyncio.run(send_inflight_requests([url], test_payload_503, 1))
+        asyncio.run(
+            send_inflight_requests([url], {**test_payload, "max_tokens": 50}, 1)
+        )
 
-        # Now send 50 concurrent requests to exhaust resources, then verify 503
-        logger.info("Sending 50 concurrent requests to exhaust resources...")
+        # Send concurrent requests and collect results
+        logger.info(
+            f"Sending {num_concurrent_requests} concurrent requests to exhaust resources..."
+        )
 
-        async def exhaust_resources_and_verify_503():
+        async def send_concurrent_requests():
             async with aiohttp.ClientSession() as session:
-                # Start 50 long-running requests concurrently
+
+                async def send_and_record(req_id, payload):
+                    try:
+                        async with session.post(url, json=payload) as response:
+                            status = response.status
+                            if status == 200:
+                                # Consume streaming response to completion
+                                async for _ in response.content.iter_any():
+                                    pass
+                            return (req_id, status)
+                    except Exception as e:
+                        logger.warning(f"Request {req_id} failed: {e}")
+                        return (req_id, -1)
+
                 tasks = []
-                for i in range(50):
-                    # Create unique shuffled content for each request
+                for i in range(num_concurrent_requests):
                     content_words = test_payload["messages"][0]["content"].split()
                     random.shuffle(content_words)
                     shuffled_content = " ".join(content_words)
-
-                    # Create unique payload for this request
-                    unique_payload = {
+                    payload = {
                         **test_payload,
                         "max_tokens": 50,
                         "messages": [
                             {**test_payload["messages"][0], "content": shuffled_content}
                         ],
                     }
+                    tasks.append(send_and_record(i, payload))
 
-                    async def send_long_request(req_id, payload):
-                        try:
-                            async with session.post(url, json=payload) as response:
-                                if response.status == 200:
-                                    # Don't read the response fully, just hold the connection
-                                    await asyncio.sleep(
-                                        10
-                                    )  # Hold connection for 10 seconds
-                                    return True
-                                else:
-                                    logger.info(
-                                        f"Request {req_id} got status {response.status}"
-                                    )
-                                    return False
-                        except Exception as e:
-                            logger.info(f"Request {req_id} failed: {e}")
-                            return False
+                return await asyncio.gather(*tasks)
 
-                    tasks.append(
-                        asyncio.create_task(send_long_request(i, unique_payload))
-                    )
+        results = asyncio.run(send_concurrent_requests())
 
-                # Wait briefly to ensure requests are in-flight
-                await asyncio.sleep(0.8)
+        # Count outcomes
+        num_succeeded = sum(1 for _, status in results if status == 200)
+        num_rejected = sum(1 for _, status in results if status == 503)
+        num_other = sum(1 for _, status in results if status not in (200, 503))
 
-                # Now send one more request that should get 503
-                logger.info("Sending additional request that should receive 503...")
-                try:
-                    async with session.post(url, json=test_payload_503) as response:
-                        status_code = response.status
-                        if status_code == 503:
-                            body = await response.json()
-                            logger.info(f"Got expected 503 response: {body}")
-                            error_msg = body.get("message", "")
-                            assert (
-                                "Service temporarily unavailable" in error_msg
-                                or "All workers are busy" in error_msg
-                            ), f"Expected service overload error message, got: {body}"
-                            return True
-                        else:
-                            logger.error(f"Expected 503 but got {status_code}")
-                            if status_code == 200:
-                                logger.error(
-                                    "Request unexpectedly succeeded when it should have been rejected"
-                                )
-                            return False
-                except Exception as e:
-                    logger.error(f"Failed to send overload test request: {e}")
-                    return False
-                finally:
-                    # Cancel all background tasks
-                    for task in tasks:
-                        task.cancel()
-                    await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info(
+            f"Results: {num_succeeded} succeeded, {num_rejected} rejected (503), "
+            f"{num_other} other"
+        )
 
-        # Run the test
-        success = asyncio.run(exhaust_resources_and_verify_503())
-        assert success, "Failed to verify 503 response when resources are exhausted"
+        # Assert minimum thresholds
+        assert (
+            num_other == 0
+        ), f"Expected only 200 or 503 responses, but got {num_other} other"
+        assert (
+            num_rejected >= expected_min_rejections
+        ), f"Expected at least {expected_min_rejections} rejections, but got {num_rejected}"
+        assert (
+            num_succeeded >= expected_min_successes
+        ), f"Expected at least {expected_min_successes} successes, but got {num_succeeded}"
 
-        logger.info("Successfully verified 503 response when all workers are busy")
+        # Verify rejection metrics from frontend /metrics endpoint
+        model_name = test_payload.get("model", "")
+        _verify_frontend_rejection_metrics(
+            frontend_port, model_name, "chat_completions", num_rejected
+        )
+
+        logger.info(
+            f"Successfully verified overload 503: {num_rejected} rejected, "
+            f"{num_succeeded} succeeded, metrics match"
+        )
 
 
 async def _zmq_replay_cycle(
