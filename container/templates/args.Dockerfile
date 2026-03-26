@@ -76,6 +76,7 @@ ARG SCCACHE_REGION=""
 # NIXL configuration
 ARG NIXL_UCX_REF={{ context.dynamo.nixl_ucx_ref }}
 ARG NIXL_REF={{ context[framework].nixl_ref if context[framework].nixl_ref is defined else context.dynamo.nixl_ref }}
+ARG HWLOC_VERSION={{ context[framework].hwloc_version if context[framework].hwloc_version is defined else context.dynamo.hwloc_version }}
 ARG NIXL_DISABLE_PLUGINS={{ context[framework].nixl_disable_plugins if context[framework].nixl_disable_plugins is defined else "" }}
 {% if device == "cuda" %}
 ARG NIXL_GDRCOPY_REF={{ context.dynamo.nixl_gdrcopy_ref }}
