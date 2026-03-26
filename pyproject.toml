@@ -19,7 +19,6 @@ dependencies = [
     "prometheus_client>=0.23.1,<1.0",
     "msgspec>=0.19.0",
     "pyzmq>=26.0.0",
-    "msgpack==1.1.2",
 ]
 
 classifiers = [
@@ -51,9 +50,7 @@ vllm = [
     "uvloop",
     "nixl[cu12]<=0.10.1",
     "vllm[flashinfer,runai,otel]==0.18.0",
-    # vllm-omni 0.16.0 is now on PyPI; install only future rc builds from source in container builds
-    # (see container/deps/vllm/install_vllm.sh). pip install ai-dynamo[vllm] will
-    # not include vllm-omni — install it separately from source if needed.
+    # pip install ai-dynamo[vllm] does not include vllm-omni.
     "vllm-omni==0.16.0",
     "blake3>=1.0.0,<2.0.0",
 ]
@@ -357,7 +354,6 @@ module = [
     "filterpy.*",
     "prophet",
     "prophet.*",
-    "msgpack",
     "nixl",
     "nixl.*",
     "imageio",

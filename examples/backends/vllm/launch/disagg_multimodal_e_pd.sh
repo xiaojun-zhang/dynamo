@@ -7,6 +7,11 @@ trap 'echo Cleaning up...; kill 0' EXIT
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/../../../common/launch_utils.sh"
 
+# Upstream-based images rely on wheel-packaged NIXL/UCX assets. Constrain UCX
+# transports to the set we exercise in single-node Dynamo tests to avoid
+# shared-memory transport crashes during NIXL initialization.
+export UCX_TLS="${UCX_TLS:-tcp,cuda_copy,cuda_ipc,self}"
+
 # Default values
 MODEL_NAME="Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
 SINGLE_GPU=false
@@ -93,6 +98,12 @@ fi
 
 # Start encode worker
 echo "Starting encode worker on GPU $DYN_ENCODE_WORKER_GPU (GPU mem: $DYN_ENCODE_GPU_MEM)..."
+DYN_SYSTEM_PORT_ENCODE=${DYN_SYSTEM_PORT1:-8081}
+DYN_SYSTEM_PORT_PD=${DYN_SYSTEM_PORT2:-8082}
+
+echo "System ports: encode=${DYN_SYSTEM_PORT_ENCODE}, pd=${DYN_SYSTEM_PORT_PD}"
+
+DYN_SYSTEM_PORT=$DYN_SYSTEM_PORT_ENCODE \
 CUDA_VISIBLE_DEVICES=$DYN_ENCODE_WORKER_GPU \
 python -m dynamo.vllm \
   --multimodal-encode-worker \
@@ -103,6 +114,7 @@ python -m dynamo.vllm \
 
 # Start PD worker (aggregated prefill+decode, routes to encoder for embeddings)
 echo "Starting PD worker on GPU $DYN_PD_WORKER_GPU (GPU mem: $DYN_PD_GPU_MEM)..."
+DYN_SYSTEM_PORT=$DYN_SYSTEM_PORT_PD \
 CUDA_VISIBLE_DEVICES=$DYN_PD_WORKER_GPU \
 python -m dynamo.vllm \
   --route-to-encoder \

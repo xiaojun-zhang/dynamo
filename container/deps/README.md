@@ -10,7 +10,6 @@ so each image only installs what it needs.
 | `requirements.common.txt` | Core deps shared by all containers |
 | `requirements.planner.txt` | Planner, profiler, global_planner, deploy utils |
 | `requirements.frontend.txt` | Frontend deps |
-| `requirements.vllm.txt` | vLLM-specific deps |
 | `requirements.benchmark.txt` | Benchmark and profiling tools |
 | `requirements.test.txt` | Test-only deps |
 | `requirements.dev.txt` | Dev-only tools |
