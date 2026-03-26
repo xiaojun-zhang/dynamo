@@ -109,7 +109,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         clang \
         libclang-dev \
         libfontconfig-dev && \
-    /usr/bin/python3 -m pip install --no-cache-dir yq && \
+    /usr/bin/python3 -m pip install --break-system-packages --no-cache-dir yq && \
     rm -rf /var/lib/apt/lists/* && \
     # Initialize Git LFS for the dynamo user (required for requirements with lfs=true)
     git lfs install
