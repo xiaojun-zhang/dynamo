@@ -71,6 +71,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
     parser.addoption(
         "--gpus",
+        "--gpu",
         type=str,
         default="all",
         help="Comma-separated GPU indices or 'all' (default: all). "

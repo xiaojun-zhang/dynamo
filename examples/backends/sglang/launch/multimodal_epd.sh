@@ -72,8 +72,23 @@ if [[ -n "$SERVED_MODEL_NAME" ]]; then
 fi
 
 # GPU assignments (override via environment variables)
-DYN_ENCODE_WORKER_GPU=${DYN_ENCODE_WORKER_GPU:-0}
-DYN_WORKER_GPU=${DYN_WORKER_GPU:-1}
+if [[ "$SINGLE_GPU" == "true" ]]; then
+    DYN_ENCODE_WORKER_GPU=${DYN_ENCODE_WORKER_GPU:-0}
+    DYN_WORKER_GPU=${DYN_WORKER_GPU:-0}
+else
+    DYN_ENCODE_WORKER_GPU=${DYN_ENCODE_WORKER_GPU:-0}
+    DYN_WORKER_GPU=${DYN_WORKER_GPU:-1}
+fi
+
+# Per-worker CUDA_VISIBLE_DEVICES pinning. In single-gpu mode, inherit from parent
+# (the parallel test runner sets CUDA_VISIBLE_DEVICES); overriding would defeat GPU assignment.
+if [[ "$SINGLE_GPU" == "true" ]]; then
+    _ENCODE_CUDA_PIN=""
+    _WORKER_CUDA_PIN=""
+else
+    _ENCODE_CUDA_PIN="CUDA_VISIBLE_DEVICES=$DYN_ENCODE_WORKER_GPU"
+    _WORKER_CUDA_PIN="CUDA_VISIBLE_DEVICES=$DYN_WORKER_GPU"
+fi
 
 # GPU memory fractions for workers (used with --mem-fraction-static)
 DYN_ENCODE_GPU_MEM=${DYN_ENCODE_GPU_MEM:-0.9}
@@ -108,7 +123,7 @@ python3 -m dynamo.frontend &
 # run SGLang multimodal encode worker (frontend-facing: encodes images, routes to worker)
 echo "Starting encode worker on GPU $DYN_ENCODE_WORKER_GPU (GPU mem: $DYN_ENCODE_GPU_MEM)..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-CUDA_VISIBLE_DEVICES=$DYN_ENCODE_WORKER_GPU python3 -m dynamo.sglang --multimodal-encode-worker --model-path "$MODEL_NAME" $SERVED_MODEL_ARG --chat-template "$CHAT_TEMPLATE" --skip-tokenizer-init $ENCODE_EXTRA_ARGS &
+env ${_ENCODE_CUDA_PIN:+"$_ENCODE_CUDA_PIN"} python3 -m dynamo.sglang --multimodal-encode-worker --model-path "$MODEL_NAME" $SERVED_MODEL_ARG --chat-template "$CHAT_TEMPLATE" --skip-tokenizer-init $ENCODE_EXTRA_ARGS &
 
 if [[ "$SINGLE_GPU" == "true" ]]; then
     # Wait for encode worker to initialize before starting PD worker.
@@ -122,7 +137,7 @@ fi
 # See https://github.com/sgl-project/sglang/pull/11203.
 echo "Starting PD worker on GPU $DYN_WORKER_GPU (GPU mem: $DYN_WORKER_GPU_MEM)..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
-CUDA_VISIBLE_DEVICES=$DYN_WORKER_GPU python3 -m dynamo.sglang \
+env ${_WORKER_CUDA_PIN:+"$_WORKER_CUDA_PIN"} python3 -m dynamo.sglang \
   --multimodal-worker \
   --model-path "$MODEL_NAME" \
   $SERVED_MODEL_ARG \

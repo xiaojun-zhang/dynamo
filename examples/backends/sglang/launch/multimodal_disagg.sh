@@ -82,6 +82,18 @@ else
     DYN_DECODE_WORKER_GPU=${DYN_DECODE_WORKER_GPU:-2}
 fi
 
+# Per-worker CUDA_VISIBLE_DEVICES pinning. In single-gpu mode, inherit from parent
+# (the parallel test runner sets CUDA_VISIBLE_DEVICES); overriding would defeat GPU assignment.
+if [[ "$SINGLE_GPU" == "true" ]]; then
+    _ENCODE_CUDA_PIN=""
+    _PREFILL_CUDA_PIN=""
+    _DECODE_CUDA_PIN=""
+else
+    _ENCODE_CUDA_PIN="CUDA_VISIBLE_DEVICES=$DYN_ENCODE_WORKER_GPU"
+    _PREFILL_CUDA_PIN="CUDA_VISIBLE_DEVICES=$DYN_PREFILL_WORKER_GPU"
+    _DECODE_CUDA_PIN="CUDA_VISIBLE_DEVICES=$DYN_DECODE_WORKER_GPU"
+fi
+
 # GPU memory fractions for workers (used with --mem-fraction-static)
 DYN_ENCODE_GPU_MEM=${DYN_ENCODE_GPU_MEM:-0.9}
 DYN_PREFILL_GPU_MEM=${DYN_PREFILL_GPU_MEM:-0.9}
@@ -118,7 +130,7 @@ python3 -m dynamo.frontend &
 # run SGLang multimodal encode worker (frontend-facing: encodes images, routes to worker)
 echo "Starting encode worker on GPU $DYN_ENCODE_WORKER_GPU (GPU mem: $DYN_ENCODE_GPU_MEM)..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-CUDA_VISIBLE_DEVICES=$DYN_ENCODE_WORKER_GPU python3 -m dynamo.sglang --multimodal-encode-worker --model-path "$MODEL_NAME" $SERVED_MODEL_ARG --chat-template "$CHAT_TEMPLATE" --skip-tokenizer-init $ENCODE_EXTRA_ARGS &
+env ${_ENCODE_CUDA_PIN:+"$_ENCODE_CUDA_PIN"} python3 -m dynamo.sglang --multimodal-encode-worker --model-path "$MODEL_NAME" $SERVED_MODEL_ARG --chat-template "$CHAT_TEMPLATE" --skip-tokenizer-init $ENCODE_EXTRA_ARGS &
 
 if [[ "$SINGLE_GPU" == "true" ]]; then
     # Wait for encode worker to initialize before starting prefill worker.
@@ -132,7 +144,7 @@ fi
 # See https://github.com/sgl-project/sglang/pull/11203.
 echo "Starting prefill worker on GPU $DYN_PREFILL_WORKER_GPU (GPU mem: $DYN_PREFILL_GPU_MEM)..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
-CUDA_VISIBLE_DEVICES=$DYN_PREFILL_WORKER_GPU python3 -m dynamo.sglang \
+env ${_PREFILL_CUDA_PIN:+"$_PREFILL_CUDA_PIN"} python3 -m dynamo.sglang \
   --multimodal-worker \
   --model-path "$MODEL_NAME" \
   $SERVED_MODEL_ARG \
@@ -155,7 +167,7 @@ fi
 
 # run SGLang multimodal decode worker
 echo "Starting decode worker on GPU $DYN_DECODE_WORKER_GPU (GPU mem: $DYN_DECODE_GPU_MEM)..."
-CUDA_VISIBLE_DEVICES=$DYN_DECODE_WORKER_GPU python3 -m dynamo.sglang \
+env ${_DECODE_CUDA_PIN:+"$_DECODE_CUDA_PIN"} python3 -m dynamo.sglang \
   --multimodal-worker \
   --model-path "$MODEL_NAME" \
   $SERVED_MODEL_ARG \

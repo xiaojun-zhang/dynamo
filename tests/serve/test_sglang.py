@@ -199,8 +199,6 @@ sglang_configs = {
         script_args=["--model", "Qwen/Qwen3-VL-2B-Instruct", "--single-gpu"],
         timeout=360,
         env={
-            "DYN_ENCODE_WORKER_GPU": "0",
-            "DYN_WORKER_GPU": "0",
             "DYN_ENCODE_GPU_MEM": "0.1",
             "DYN_WORKER_GPU_MEM": "0.4",
         },
