@@ -74,15 +74,24 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     fi
 {% endif %}
 
+# Install the small set of supplemental runtime deps that broad CPU test
+# collection still imports on top of the upstream vLLM image.
+RUN --mount=type=bind,source=./container/deps/requirements.vllm.runtime-extra.txt,target=/tmp/requirements.vllm.runtime-extra.txt \
+    --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    export UV_CACHE_DIR=/root/.cache/uv UV_GIT_LFS=1 UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 && \
+    uv pip install --system \
+        --requirement /tmp/requirements.vllm.runtime-extra.txt
+
 USER dynamo
 
-# Copy only the runtime-facing vLLM test and launch surface. Keep framework
-# source trees out of /workspace so optional components like planner are not
-# treated as present in the upstream runtime image.
+# Copy the workspace surface needed by the broad pre-merge test image that is
+# built on top of this runtime. Keep Python deps lean in runtime; test-only deps
+# are still layered in container/Dockerfile.test.
 COPY --chmod=775 --chown=dynamo:0 tests /workspace/tests
-COPY --chmod=775 --chown=dynamo:0 examples/backends/vllm /workspace/examples/backends/vllm
-COPY --chmod=775 --chown=dynamo:0 examples/common /workspace/examples/common
-COPY --chmod=775 --chown=dynamo:0 deploy/sanity_check.py /workspace/deploy/sanity_check.py
+COPY --chmod=775 --chown=dynamo:0 examples /workspace/examples
+COPY --chmod=775 --chown=dynamo:0 deploy /workspace/deploy
+COPY --chmod=775 --chown=dynamo:0 components /workspace/components
+COPY --chmod=664 --chown=dynamo:0 lib/llm/tests/data/media/llm-optimize-deploy-graphic.png /workspace/lib/llm/tests/data/media/llm-optimize-deploy-graphic.png
 
 # Setup launch banner in common directory accessible to all users
 RUN --mount=type=bind,source=./container/launch_message/runtime.txt,target=/opt/dynamo/launch_message.txt \

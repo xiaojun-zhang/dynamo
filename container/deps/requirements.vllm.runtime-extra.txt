@@ -1,0 +1,7 @@
+filterpy==1.4.5
+# Narrow supplemental runtime deps for the upstream vLLM image.
+# Keep this list additive and explicit to minimize churn in the upstream solve.
+kubernetes==32.0.1
+prometheus-api-client==0.6.0
+prophet==1.1.7
+scikit-learn==1.7.2

@@ -16,14 +16,28 @@
 """RAPID search strategy: AIC simulation + picking + DGD generation."""
 
 import logging
+from typing import Any
 
 import pandas as pd
 import yaml
-from aiconfigurator.cli.main import _execute_task_configs, build_default_task_configs
-from aiconfigurator.generator.api import generate_backend_artifacts
-from aiconfigurator.generator.module_bridge import task_config_to_generator_config
-from aiconfigurator.generator.naive import build_naive_generator_params
-from aiconfigurator.sdk.task import TaskConfig, TaskRunner
+
+try:
+    from aiconfigurator.cli.main import (
+        _execute_task_configs,
+        build_default_task_configs,
+    )
+    from aiconfigurator.generator.api import generate_backend_artifacts
+    from aiconfigurator.generator.module_bridge import task_config_to_generator_config
+    from aiconfigurator.generator.naive import build_naive_generator_params
+    from aiconfigurator.sdk.task import TaskConfig, TaskRunner
+except ModuleNotFoundError:
+    _execute_task_configs = None
+    build_default_task_configs = None
+    generate_backend_artifacts = None
+    task_config_to_generator_config = None
+    build_naive_generator_params = None
+    TaskConfig = Any
+    TaskRunner = None
 
 from dynamo.profiler.utils.dgdr_v1beta1_types import DynamoGraphDeploymentRequestSpec
 from dynamo.profiler.utils.profile_common import (

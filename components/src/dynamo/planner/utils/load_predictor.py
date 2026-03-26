@@ -23,9 +23,13 @@ from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
-import pmdarima
 from filterpy.kalman import KalmanFilter
 from prophet import Prophet
+
+try:
+    import pmdarima
+except Exception:
+    pmdarima = None
 
 from dynamo.planner.utils.planner_config import PlannerConfig
 from dynamo.runtime.logging import configure_dynamo_logging
@@ -149,6 +153,11 @@ class ARIMAPredictor(BasePredictor):
     def predict_next(self) -> float:
         """Predict the next value(s)"""
         if len(self._raw_buffer) < self.minimum_data_points:
+            return self.get_last_value()
+
+        if pmdarima is None:
+            logger.warning("pmdarima is unavailable; using last observed value")
+            self._pending_raw_updates = []
             return self.get_last_value()
 
         # Check if all values are the same (constant data)
