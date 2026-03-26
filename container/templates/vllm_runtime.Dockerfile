@@ -85,11 +85,14 @@ RUN --mount=type=bind,source=./container/deps/requirements.vllm.runtime-extra.tx
 USER dynamo
 
 # Copy the workspace surface needed by the broad pre-merge test image that is
-# built on top of this runtime. Keep Python deps lean in runtime; test-only deps
-# are still layered in container/Dockerfile.test.
+# built on top of this runtime. Match the broader workspace surface used by the
+# previous vLLM runtime path; test-only Python deps are still layered in
+# container/Dockerfile.test.
+COPY --chmod=775 --chown=dynamo:0 benchmarks /workspace/benchmarks
 COPY --chmod=775 --chown=dynamo:0 tests /workspace/tests
 COPY --chmod=775 --chown=dynamo:0 examples /workspace/examples
 COPY --chmod=775 --chown=dynamo:0 deploy /workspace/deploy
+COPY --chmod=775 --chown=dynamo:0 recipes /workspace/recipes
 COPY --chmod=775 --chown=dynamo:0 components /workspace/components
 COPY --chown=dynamo:0 lib /workspace/lib
 
