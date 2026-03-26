@@ -143,8 +143,7 @@ def print_gpu_plan(
     for gpu in gpus:
         gib = gpu["total_mib"] / 1024
         print(f"  GPU {gpu['index']}: {gpu['name']} ({gib:.1f} GiB)")
-    margin_pct = int(VRAM_MULTI_PROC_MARGIN * 100)
-    print(f"\n  Usable VRAM: {budget_gib:.0f} GiB (after {margin_pct}% safety)")
+    print(f"\n  Usable VRAM: {budget_gib:.0f} GiB")
     print("\n  Run options:")
     print("    (no -n)  : sequential, 1 test at a time")
     print(

@@ -106,6 +106,8 @@ fi
 # child processes would inherit. Unset it so only workers that need it set their own.
 unset DYN_SYSTEM_PORT
 
+DISAGG_BOOTSTRAP_PORT="${DYN_DISAGG_BOOTSTRAP_PORT:-12345}"
+
 HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner --multimodal "Launching Disaggregated Multimodal E/P/D" "$MODEL_NAME" "$HTTP_PORT"
 
@@ -139,7 +141,7 @@ CUDA_VISIBLE_DEVICES=$DYN_PREFILL_WORKER_GPU python3 -m dynamo.sglang \
   --trust-remote-code \
   --skip-tokenizer-init \
   --disaggregation-mode prefill \
-  --disaggregation-bootstrap-port 12345 \
+  --disaggregation-bootstrap-port "$DISAGG_BOOTSTRAP_PORT" \
   --host 0.0.0.0 \
   --disable-radix-cache \
   --disaggregation-transfer-backend nixl \
@@ -162,7 +164,7 @@ CUDA_VISIBLE_DEVICES=$DYN_DECODE_WORKER_GPU python3 -m dynamo.sglang \
   --trust-remote-code \
   --skip-tokenizer-init \
   --disaggregation-mode decode \
-  --disaggregation-bootstrap-port 12345 \
+  --disaggregation-bootstrap-port "$DISAGG_BOOTSTRAP_PORT" \
   --host 0.0.0.0 \
   --disaggregation-transfer-backend nixl \
   $DECODE_EXTRA_ARGS &

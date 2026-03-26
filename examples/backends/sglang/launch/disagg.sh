@@ -50,6 +50,8 @@ MODEL="Qwen/Qwen3-0.6B"
 
 GPU_MEM_ARGS=$(build_gpu_mem_args sglang)
 
+DISAGG_BOOTSTRAP_PORT="${DYN_DISAGG_BOOTSTRAP_PORT:-12345}"
+
 HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Disaggregated Serving (2 GPUs)" "$MODEL" "$HTTP_PORT"
 
@@ -71,7 +73,7 @@ python3 -m dynamo.sglang \
   --tp 1 \
   --trust-remote-code \
   --disaggregation-mode prefill \
-  --disaggregation-bootstrap-port 12345 \
+  --disaggregation-bootstrap-port "$DISAGG_BOOTSTRAP_PORT" \
   --host 0.0.0.0 \
   --port 40000 \
   --disaggregation-transfer-backend nixl \
@@ -88,7 +90,7 @@ CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.sglang \
   --tp 1 \
   --trust-remote-code \
   --disaggregation-mode decode \
-  --disaggregation-bootstrap-port 12345 \
+  --disaggregation-bootstrap-port "$DISAGG_BOOTSTRAP_PORT" \
   --host 0.0.0.0 \
   --disaggregation-transfer-backend nixl \
   --enable-metrics \

@@ -509,7 +509,7 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             vram_mark = item.get_closest_marker("profiled_vram_gib")
             vram_val = vram_mark.args[0] if vram_mark and vram_mark.args else None
-            name = item.nodeid.split("::", 1)[1] if "::" in item.nodeid else item.nodeid
+            name = item.nodeid
 
             skip_reasons = []
             for marker in item.iter_markers("skip"):

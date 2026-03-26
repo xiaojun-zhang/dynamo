@@ -111,20 +111,13 @@ def _print(msg: str = "") -> None:
 
 
 def _fmt_req(test: _TestEntry) -> str:
-    """Format the resource request value for plan/summary tables.
-
-    Right-aligns numeric values so columns line up:
-      req_kv_tokens=    64
-      req_kv_tokens=  1024
-      req_kv=  3.70 GiB
-                  None
-    """
+    """Format the resource request value for display."""
     if test.requested_sglang_kv_tokens is not None:
-        return f"req_kv_tokens={int(test.requested_sglang_kv_tokens):>6}"
+        return f"req_kv_tokens={int(test.requested_sglang_kv_tokens)}"
     if test.requested_vllm_kv_cache_bytes is not None:
         gib = int(test.requested_vllm_kv_cache_bytes) / (1024**3)
-        return f"req_kv={gib:>5.2f} GiB"
-    return "             None"
+        return f"req_kv={gib:.2f} GiB"
+    return "req_kv=None"
 
 
 _JUNIT_DIR = os.path.join(tempfile.gettempdir(), "gpu_parallel_junit")
@@ -382,14 +375,12 @@ def run_parallel(
             f"GPUs {gpu_list} ({size_str})"
         )
 
-    max_name = max((len(t.name) for t in tests), default=30)
     _print()
     for test in tests:
-        label = f"[w{test.w_id}] {test.name}"
         _print(
-            f"{label:<{max_name + 8}} "
-            f"profiled={test.profiled_gib:>5.1f} GiB  "
-            f"{_fmt_req(test)}  "
+            f"[w{test.w_id}] {test.name}  "
+            f"profiled={test.profiled_gib:.1f} GiB, "
+            f"{_fmt_req(test)}, "
             f"timeout={int(test.timeout)}s"
         )
     if skipped:
@@ -398,7 +389,7 @@ def run_parallel(
             f"Skipped ({len(skipped)} -- profiled > max_vram_gib {max_vram_gib:.0f} GiB):"
         )
         for name, profiled in sorted(skipped, key=lambda x: x[1], reverse=True):
-            _print(f"  {name}  (profiled {profiled:.1f} GiB)")
+            _print(f"  {name}  (profiled={profiled:.1f} GiB)")
     _print()
 
     # --- Scheduling state ---
@@ -638,7 +629,7 @@ def run_parallel(
                 retry_str = f" (retry {entry.retries})" if entry.retries else ""
                 _print(
                     f"[w{w_id}] {entry.name} "
-                    f"(GPU{gi}, profiled {entry.profiled_gib:.1f} GiB, "
+                    f"(GPU{gi}, profiled={entry.profiled_gib:.1f} GiB, "
                     f"{_fmt_req(entry)}) RUNNING{retry_str}"
                 )
 
