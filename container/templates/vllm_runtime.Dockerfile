@@ -91,7 +91,7 @@ COPY --chmod=775 --chown=dynamo:0 tests /workspace/tests
 COPY --chmod=775 --chown=dynamo:0 examples /workspace/examples
 COPY --chmod=775 --chown=dynamo:0 deploy /workspace/deploy
 COPY --chmod=775 --chown=dynamo:0 components /workspace/components
-COPY --chmod=664 --chown=dynamo:0 lib/llm/tests/data/media/llm-optimize-deploy-graphic.png /workspace/lib/llm/tests/data/media/llm-optimize-deploy-graphic.png
+COPY --chown=dynamo:0 lib /workspace/lib
 
 # Setup launch banner in common directory accessible to all users
 RUN --mount=type=bind,source=./container/launch_message/runtime.txt,target=/opt/dynamo/launch_message.txt \
