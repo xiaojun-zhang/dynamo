@@ -411,6 +411,10 @@ module = [
     "pydantic_core",
     "aiconfigurator",
     "aiconfigurator.*",
+    "soundfile",
+    "soundfile.*",
+    "librosa",
+    "librosa.*",
 ]
 ignore_missing_imports = true
 
