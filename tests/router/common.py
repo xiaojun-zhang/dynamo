@@ -632,7 +632,7 @@ def _verify_frontend_rejection_metrics(
     except requests.RequestException as e:
         raise AssertionError(
             f"Failed to fetch frontend metrics from {metrics_url}: {e}"
-        )
+        ) from e
 
     metric_count = _parse_frontend_rejection_metric(
         metrics_response.text, model_name, endpoint
