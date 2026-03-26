@@ -50,17 +50,17 @@ def _make_audio_handler(**config_overrides):
 class TestValidateTtsRequest:
     """Tests for _validate_tts_request."""
 
-    def test_empty_input_rejected(self):
+    @pytest.mark.asyncio
+    async def test_empty_input_rejected(self):
         handler = _make_audio_handler()
         req = NvCreateAudioSpeechRequest(input="   ")
         with pytest.raises(ValueError, match="Input text cannot be empty"):
-            handler._validate_tts_request(req)
+            await handler.build_engine_inputs(req)
 
-    def test_invalid_task_type_rejected(self):
-        handler = _make_audio_handler()
-        req = NvCreateAudioSpeechRequest(input="hello", task_type="Banana")
-        with pytest.raises(ValueError, match="Invalid task_type"):
-            handler._validate_tts_request(req)
+    def test_invalid_task_type_rejected_by_pydantic(self):
+        """Pydantic Literal validation rejects invalid task_type at construction."""
+        with pytest.raises(Exception):
+            NvCreateAudioSpeechRequest(input="hello", task_type="Banana")
 
     def test_valid_task_types_accepted(self):
         handler = _make_audio_handler()

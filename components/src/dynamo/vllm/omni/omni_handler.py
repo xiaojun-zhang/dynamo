@@ -277,6 +277,7 @@ class OmniHandler(BaseOmniHandler):
             assert isinstance(parsed_request, NvCreateVideoRequest)
             return self._engine_inputs_from_video(parsed_request, image=image)
         elif request_type == RequestType.AUDIO_GENERATION:
+            assert isinstance(parsed_request, NvCreateAudioSpeechRequest)
             return await self.audio.build_engine_inputs(parsed_request)
 
         raise ValueError(f"Unknown request type: {request_type}")

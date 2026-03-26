@@ -87,20 +87,22 @@ class TestPrepareImageOutput:
 
 
 class TestBuildEngineInputs:
-    def test_chat_completion(self):
+    @pytest.mark.asyncio
+    async def test_chat_completion(self):
         """Chat request extracts text prompt with no sampling params."""
         handler = _make_handler()
         raw = {"messages": [{"role": "user", "content": "hello"}]}
-        inputs = handler.build_engine_inputs(raw, RequestType.CHAT_COMPLETION)
+        inputs = await handler.build_engine_inputs(raw, RequestType.CHAT_COMPLETION)
         assert inputs.request_type == RequestType.CHAT_COMPLETION
         assert inputs.prompt["prompt"] == "hello"
         assert inputs.sampling_params_list is None
 
-    def test_image_generation(self):
+    @pytest.mark.asyncio
+    async def test_image_generation(self):
         """Image request parses prompt, size, and creates diffusion sampling params."""
         handler = _make_handler()
         req = NvCreateImageRequest(prompt="a cat", size="512x512")
-        inputs = handler.build_engine_inputs(req, RequestType.IMAGE_GENERATION)
+        inputs = await handler.build_engine_inputs(req, RequestType.IMAGE_GENERATION)
         assert inputs.request_type == RequestType.IMAGE_GENERATION
         assert inputs.prompt["prompt"] == "a cat"
         assert len(inputs.sampling_params_list) == 1
@@ -108,13 +110,14 @@ class TestBuildEngineInputs:
         assert sp.height == 512
         assert sp.width == 512
 
-    def test_video_generation(self):
+    @pytest.mark.asyncio
+    async def test_video_generation(self):
         """Video request parses prompt, size, seconds, and sets fps."""
         handler = _make_handler()
         req = NvCreateVideoRequest(
             prompt="a drone", model="test", size="832x480", seconds=2
         )
-        inputs = handler.build_engine_inputs(req, RequestType.VIDEO_GENERATION)
+        inputs = await handler.build_engine_inputs(req, RequestType.VIDEO_GENERATION)
         assert inputs.request_type == RequestType.VIDEO_GENERATION
         assert inputs.prompt["prompt"] == "a drone"
         assert inputs.fps > 0
@@ -270,7 +273,8 @@ class TestFormatVideoChunk:
 class TestI2VEngineInputs:
     """Tests for image-to-video: multi_modal_data attachment, I2V nvext params, and protocol fields."""
 
-    def test_t2v_no_multi_modal_data_and_i2v_attaches_image(self):
+    @pytest.mark.asyncio
+    async def test_t2v_no_multi_modal_data_and_i2v_attaches_image(self):
         """T2V has no multi_modal_data; I2V attaches image to prompt."""
         handler = _make_handler()
         req = NvCreateVideoRequest(
@@ -278,15 +282,18 @@ class TestI2VEngineInputs:
         )
 
         # T2V: no image
-        t2v = handler.build_engine_inputs(req, RequestType.VIDEO_GENERATION)
+        t2v = await handler.build_engine_inputs(req, RequestType.VIDEO_GENERATION)
         assert "multi_modal_data" not in t2v.prompt
 
         # I2V: image attached
         img = Image.new("RGB", (64, 64), color="red")
-        i2v = handler.build_engine_inputs(req, RequestType.VIDEO_GENERATION, image=img)
+        i2v = await handler.build_engine_inputs(
+            req, RequestType.VIDEO_GENERATION, image=img
+        )
         assert i2v.prompt["multi_modal_data"]["image"] is img
 
-    def test_i2v_nvext_params_on_sampling_params(self):
+    @pytest.mark.asyncio
+    async def test_i2v_nvext_params_on_sampling_params(self):
         """boundary_ratio and guidance_scale_2 are forwarded to sampling params."""
         handler = _make_handler()
         req = NvCreateVideoRequest(
@@ -297,9 +304,8 @@ class TestI2VEngineInputs:
                 boundary_ratio=0.875, guidance_scale_2=1.0, num_inference_steps=40
             ),
         )
-        sp = handler.build_engine_inputs(
-            req, RequestType.VIDEO_GENERATION
-        ).sampling_params_list[0]
+        result = await handler.build_engine_inputs(req, RequestType.VIDEO_GENERATION)
+        sp = result.sampling_params_list[0]
         assert sp.boundary_ratio == 0.875
         assert sp.guidance_scale_2 == 1.0
         assert sp.num_inference_steps == 40

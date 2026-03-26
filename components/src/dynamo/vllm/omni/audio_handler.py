@@ -63,6 +63,7 @@ class AudioGenerationHandler:
         self.engine_client = engine_client
         self.media_output_fs = media_output_fs
         self.media_output_http_url = media_output_http_url
+        self._tts_tokenizer: Any = None
 
         # Cache TTS capabilities from model config at init.
         self._tts_supported_speakers: set = self._load_supported_speakers()
@@ -492,6 +493,7 @@ class AudioGenerationHandler:
                 else response_format
             )
 
+            assert encode_fmt is not None
             audio_bytes, media_type = await asyncio.to_thread(
                 self._encode_audio, audio_np, sample_rate, encode_fmt, speed
             )
