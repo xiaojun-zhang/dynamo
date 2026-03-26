@@ -32,32 +32,10 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pynvml
-
-
-def _print(msg: str = "") -> None:
-    """Print to stderr so pytest doesn't capture it."""
-    print(msg, file=sys.stderr, flush=True)
-
-
-def _fmt_req(test: dict) -> str:
-    """Format the resource request value for plan/summary tables.
-
-    Right-aligns numeric values so columns line up:
-      req_kv_tokens=    64
-      req_kv_tokens=  1024
-      req_kv=  3.70 GiB
-                  None
-    """
-    if test.get("requested_sglang_kv_tokens") is not None:
-        return f"req_kv_tokens={int(test['requested_sglang_kv_tokens']):>6}"
-    if test.get("requested_vllm_kv_cache_bytes") is not None:
-        gib = int(test["requested_vllm_kv_cache_bytes"]) / (1024**3)
-        return f"req_kv={gib:>5.2f} GiB"
-    return "             None"
-
 
 _repo_root = str(Path(__file__).resolve().parents[2])
 if _repo_root not in sys.path:
@@ -69,6 +47,85 @@ from tests.utils.vram_utils import (  # noqa: E402
     detect_gpus,
     load_test_meta,
 )
+
+
+@dataclass
+class _TestEntry:
+    """A test scheduled for GPU-parallel execution."""
+
+    id: str
+    name: str
+    profiled_gib: float
+    timeout: float
+    requested_vllm_kv_cache_bytes: int | None = None
+    requested_sglang_kv_tokens: int | None = None
+    w_id: int = 0
+    assigned_gpu: int | None = None
+    retries: int = 0
+
+
+@dataclass
+class _CompletedTest:
+    """Result record for a finished test subprocess."""
+
+    test: _TestEntry
+    duration: float
+    passed: bool
+    fail_reason: str | None = None
+
+
+@dataclass
+class _TentativeGpu:
+    """Scratch copy of GPU budget/free state used during scheduling."""
+
+    budget: float
+    free: float
+    count: int
+
+
+@dataclass
+class _GpuState:
+    """Per-GPU bookkeeping for VRAM budget tracking."""
+
+    index: int
+    total_gib: float
+    budget_multi: float
+    budget_used: float = 0.0
+    running_count: int = 0
+
+
+@dataclass
+class _RunningTest:
+    """State for a test subprocess currently executing on a GPU."""
+
+    proc: subprocess.Popen[str]
+    test: _TestEntry
+    start_time: float
+    captured: list[str] = field(default_factory=list)
+    reader_thread: threading.Thread | None = None
+
+
+def _print(msg: str = "") -> None:
+    """Print to stderr so pytest doesn't capture it."""
+    print(msg, file=sys.stderr, flush=True)
+
+
+def _fmt_req(test: _TestEntry) -> str:
+    """Format the resource request value for plan/summary tables.
+
+    Right-aligns numeric values so columns line up:
+      req_kv_tokens=    64
+      req_kv_tokens=  1024
+      req_kv=  3.70 GiB
+                  None
+    """
+    if test.requested_sglang_kv_tokens is not None:
+        return f"req_kv_tokens={int(test.requested_sglang_kv_tokens):>6}"
+    if test.requested_vllm_kv_cache_bytes is not None:
+        gib = int(test.requested_vllm_kv_cache_bytes) / (1024**3)
+        return f"req_kv={gib:>5.2f} GiB"
+    return "             None"
+
 
 _JUNIT_DIR = os.path.join(tempfile.gettempdir(), "gpu_parallel_junit")
 _JUNIT_COMBINED = os.path.join(_JUNIT_DIR, "combined.xml")
@@ -227,7 +284,7 @@ def run_parallel(
         gpu_indices = [g["index"] for g in gpus]
 
     gpu_by_idx = {g["index"]: g for g in gpus}
-    gpu_states: dict[int, dict] = {}
+    gpu_states: dict[int, _GpuState] = {}
     for gi in gpu_indices:
         if gi not in gpu_by_idx:
             _print(
@@ -236,30 +293,28 @@ def run_parallel(
             )
             return 1
         total = gpu_by_idx[gi]["total_mib"] / 1024.0
-        gpu_states[gi] = {
-            "index": gi,
-            "total_gib": total,
-            "budget_multi": total * (1.0 - VRAM_MULTI_PROC_MARGIN),
-            "budget_used": 0.0,
-            "running_count": 0,
-        }
+        gpu_states[gi] = _GpuState(
+            index=gi,
+            total_gib=total,
+            budget_multi=total * (1.0 - VRAM_MULTI_PROC_MARGIN),
+        )
 
-    tests = []
+    tests: list[_TestEntry] = []
     for tid in test_ids:
         m = meta.get(tid, {})
         tests.append(
-            {
-                "id": tid,
-                "name": tid,
-                "profiled_gib": m.get("profiled_vram_gib", max_vram_gib),
-                "requested_vllm_kv_cache_bytes": m.get("requested_vllm_kv_cache_bytes"),
-                "timeout": m.get("timeout", 600),
-                "requested_sglang_kv_tokens": m.get("requested_sglang_kv_tokens"),
-            }
+            _TestEntry(
+                id=tid,
+                name=tid,
+                profiled_gib=m.get("profiled_vram_gib", max_vram_gib),
+                requested_vllm_kv_cache_bytes=m.get("requested_vllm_kv_cache_bytes"),
+                timeout=m.get("timeout", 600),
+                requested_sglang_kv_tokens=m.get("requested_sglang_kv_tokens"),
+            )
         )
 
     # Sort by timeout descending (longest first to minimize tail latency)
-    tests.sort(key=lambda t: t["timeout"], reverse=True)
+    tests.sort(key=lambda t: t.timeout, reverse=True)
 
     # Reject tests without a KV marker — without explicit memory control
     # they'd each grab the engine's default (e.g. vLLM 90%) and OOM when
@@ -267,9 +322,9 @@ def run_parallel(
     no_kv = [
         t
         for t in tests
-        if t["requested_vllm_kv_cache_bytes"] is None
-        and t["requested_sglang_kv_tokens"] is None
-        and t["profiled_gib"] > 0
+        if t.requested_vllm_kv_cache_bytes is None
+        and t.requested_sglang_kv_tokens is None
+        and t.profiled_gib > 0
     ]
     if no_kv:
         _print(
@@ -277,7 +332,7 @@ def run_parallel(
             f"or requested_sglang_kv_tokens marker and cannot run in parallel:"
         )
         for t in no_kv:
-            _print(f"  {t['name']}")
+            _print(f"  {t.name}")
         _print(
             "\nAdd the appropriate marker via profile_pytest.py --kv-bytes, "
             "then rerun."
@@ -295,7 +350,7 @@ def run_parallel(
 
     # Assign permanent worker IDs (w0, w1, ...) to each test
     for idx, test in enumerate(tests):
-        test["w_id"] = idx
+        test.w_id = idx
 
     os.makedirs(_JUNIT_DIR, exist_ok=True)
 
@@ -305,13 +360,13 @@ def run_parallel(
         gs = gpu_states[gi]
         _print(
             f"\nGPU parallel: {len(tests)} tests, {num_slots} concurrent slots, "
-            f"GPU{gi} ({gs['total_gib']:.0f} GiB, "
-            f"{gs['budget_multi']:.0f} GiB multi-proc budget)"
+            f"GPU{gi} ({gs.total_gib:.0f} GiB, "
+            f"{gs.budget_multi:.0f} GiB multi-proc budget)"
         )
     else:
         gpu_list = ",".join(str(gi) for gi in sorted(gpu_states))
-        sizes = {int(gs["total_gib"]) for gs in gpu_states.values()}
-        budgets = {int(gs["budget_multi"]) for gs in gpu_states.values()}
+        sizes = {int(gs.total_gib) for gs in gpu_states.values()}
+        budgets = {int(gs.budget_multi) for gs in gpu_states.values()}
         if len(sizes) == 1 and len(budgets) == 1:
             size_str = (
                 f"{next(iter(sizes))} GiB each, "
@@ -319,7 +374,7 @@ def run_parallel(
             )
         else:
             size_str = ", ".join(
-                f"GPU{gi}: {gs['total_gib']:.0f}/{gs['budget_multi']:.0f} GiB"
+                f"GPU{gi}: {gs.total_gib:.0f}/{gs.budget_multi:.0f} GiB"
                 for gi, gs in sorted(gpu_states.items())
             )
         _print(
@@ -327,15 +382,15 @@ def run_parallel(
             f"GPUs {gpu_list} ({size_str})"
         )
 
-    max_name = max((len(t["name"]) for t in tests), default=30)
+    max_name = max((len(t.name) for t in tests), default=30)
     _print()
     for test in tests:
-        label = f"[w{test['w_id']}] {test['name']}"
+        label = f"[w{test.w_id}] {test.name}"
         _print(
             f"{label:<{max_name + 8}} "
-            f"profiled={test['profiled_gib']:>5.1f} GiB  "
+            f"profiled={test.profiled_gib:>5.1f} GiB  "
             f"{_fmt_req(test)}  "
-            f"timeout={int(test['timeout'])}s"
+            f"timeout={int(test.timeout)}s"
         )
     if skipped:
         _print()
@@ -349,8 +404,8 @@ def run_parallel(
     # --- Scheduling state ---
     t0 = time.monotonic()
     pending = list(tests)
-    running: dict[int, dict] = {}  # w_id -> {proc, test, start_time, captured}
-    completed: list[dict] = []
+    running: dict[int, _RunningTest] = {}
+    completed: list[_CompletedTest] = []
     next_status = t0 + 10
     # vLLM needs a stagger because --gpu-memory-utilization triggers a memory
     # profiling step that snapshots free memory — concurrent launches corrupt
@@ -367,41 +422,40 @@ def run_parallel(
             gs = gpu_states[gi]
             actual = _get_gpu_used_gib(gi)
             workers = sorted(
-                w
-                for w, info in running.items()
-                if info["test"].get("assigned_gpu") == gi
+                w for w, run_info in running.items() if run_info.test.assigned_gpu == gi
             )
             wstr = ", ".join(
-                f"w{w}({int(now - running[w]['start_time'])}s)" for w in workers
+                f"w{w}({int(now - running[w].start_time)}s)" for w in workers
             )
-            part = f"GPU{gi}: {actual:.1f}/{gs['total_gib']:.0f} GiB"
+            part = f"GPU{gi}: {actual:.1f}/{gs.total_gib:.0f} GiB"
             if wstr:
                 part += f" [{wstr}]"
             gpu_parts.append(part)
         return f"[elapsed {elapsed}s] {', '.join(gpu_parts)}"
 
-    def _launch_test(test: dict, env_base: dict) -> dict:
+    def _launch_test(test: _TestEntry, env_base: dict) -> _RunningTest:
         """Build env, spawn subprocess, start output streamer thread."""
         env = env_base.copy()
-        env["CUDA_VISIBLE_DEVICES"] = str(test["assigned_gpu"])
-        if test["requested_sglang_kv_tokens"] is not None:
+        env["CUDA_VISIBLE_DEVICES"] = str(test.assigned_gpu)
+        if test.requested_sglang_kv_tokens is not None:
             env["_PROFILE_OVERRIDE_SGLANG_MAX_TOTAL_TOKENS"] = str(
-                int(test["requested_sglang_kv_tokens"])
+                int(test.requested_sglang_kv_tokens)
             )
-        elif test["requested_vllm_kv_cache_bytes"] is not None:
+        elif test.requested_vllm_kv_cache_bytes is not None:
             env["_PROFILE_OVERRIDE_VLLM_KV_CACHE_BYTES"] = str(
-                int(test["requested_vllm_kv_cache_bytes"])
+                int(test.requested_vllm_kv_cache_bytes)
             )
 
-        junit_path = os.path.join(_JUNIT_DIR, f"{test['name']}.xml")
+        safe_name = test.name.replace("/", "_").replace("::", "__")
+        junit_path = os.path.join(_JUNIT_DIR, f"{safe_name}.xml")
         cmd = [
             sys.executable,
             "-m",
             "pytest",
-            test["id"],
+            test.id,
             "-x",
             "--tb=short",
-            f"--timeout={int(test['timeout'])}",
+            f"--timeout={int(test.timeout)}",
             f"--junitxml={junit_path}",
         ]
         if extra_pytest_args:
@@ -414,21 +468,17 @@ def run_parallel(
             stderr=subprocess.STDOUT,
             text=True,
         )
-        captured: list[str] = []
-        w_id = test["w_id"]
+        run_info = _RunningTest(proc=proc, test=test, start_time=time.monotonic())
+        w_id = test.w_id
         stream_prefix = f"[w{w_id}]" if stream else None
         t = threading.Thread(
             target=_capture_output,
-            args=(proc.stdout, captured, stream_prefix),
+            args=(proc.stdout, run_info.captured, stream_prefix),
             daemon=True,
         )
         t.start()
-        return {
-            "proc": proc,
-            "test": test,
-            "start_time": time.monotonic(),
-            "captured": captured,
-        }
+        run_info.reader_thread = t
+        return run_info
 
     env_base = os.environ.copy()
 
@@ -437,18 +487,20 @@ def run_parallel(
 
         # Check for completed subprocesses
         for w_id in list(running.keys()):
-            info = running[w_id]
-            rc = info["proc"].poll()
+            run_info = running[w_id]
+            rc = run_info.proc.poll()
             if rc is not None:
-                duration = now - info["start_time"]
+                if run_info.reader_thread is not None:
+                    run_info.reader_thread.join(timeout=5)
+                duration = now - run_info.start_time
                 passed = rc == 0
-                test = info["test"]
-                gi = test.get("assigned_gpu")
+                test = run_info.test
+                gi = test.assigned_gpu
 
                 # Detect retryable init errors (profiling race, OOM at startup)
-                if not passed and test.get("retries", 0) < _MAX_RETRIES:
+                if not passed and test.retries < _MAX_RETRIES:
                     matched_marker = None
-                    for line in info["captured"]:
+                    for line in run_info.captured:
                         for marker in _RETRYABLE_INIT_MARKERS:
                             if marker in line:
                                 matched_marker = marker
@@ -456,16 +508,16 @@ def run_parallel(
                         if matched_marker:
                             break
                     if matched_marker:
-                        test["retries"] = test.get("retries", 0) + 1
+                        test.retries += 1
                         _print(
-                            f"[w{w_id}] retrying ({test['retries']}/{_MAX_RETRIES})"
+                            f"[w{w_id}] retrying ({test.retries}/{_MAX_RETRIES})"
                             f" — {matched_marker}"
                         )
                         if gi is not None:
-                            gpu_states[gi]["budget_used"] -= test["profiled_gib"]
-                            gpu_states[gi]["running_count"] -= 1
+                            gpu_states[gi].budget_used -= test.profiled_gib
+                            gpu_states[gi].running_count -= 1
                         del running[w_id]
-                        test.pop("assigned_gpu", None)
+                        test.assigned_gpu = None
                         pending.insert(0, test)
                         continue
 
@@ -475,33 +527,33 @@ def run_parallel(
                 if not passed:
                     if not stream:
                         prefix = f"[w{w_id}]"
-                        for line in info["captured"]:
+                        for line in run_info.captured:
                             _print(f"{prefix} {line}")
-                    for line in reversed(info["captured"]):
+                    for line in reversed(run_info.captured):
                         stripped = line.strip()
                         if stripped and not stripped.startswith("="):
                             fail_reason = stripped
                             break
 
                 status = "PASSED" if passed else "FAILED"
-                _print(f"[w{w_id}] {test['name']} {status} [{duration:.0f}s]")
+                _print(f"[w{w_id}] {test.name} {status} [{duration:.0f}s]")
                 if gi is not None:
-                    gpu_states[gi]["budget_used"] -= test["profiled_gib"]
-                    gpu_states[gi]["running_count"] -= 1
+                    gpu_states[gi].budget_used -= test.profiled_gib
+                    gpu_states[gi].running_count -= 1
                 completed.append(
-                    {
-                        "test": test,
-                        "duration": duration,
-                        "passed": passed,
-                        "fail_reason": fail_reason,
-                    }
+                    _CompletedTest(
+                        test=test,
+                        duration=duration,
+                        passed=passed,
+                        fail_reason=fail_reason,
+                    )
                 )
                 del running[w_id]
 
                 # Print status immediately after completion
                 parts = [_build_status(now)]
                 if pending:
-                    queued_str = ", ".join(f"w{t['w_id']}" for t in pending)
+                    queued_str = ", ".join(f"w{t.w_id}" for t in pending)
                     parts.append(f"[queued: {queued_str}]")
                 _print(" ".join(parts))
                 next_status = now + 10
@@ -513,15 +565,15 @@ def run_parallel(
         # simultaneously.
         if pending and len(running) < num_slots:
             actual_free = {
-                gi: gs["total_gib"] - _get_gpu_used_gib(gi)
+                gi: gs.total_gib - _get_gpu_used_gib(gi)
                 for gi, gs in gpu_states.items()
             }
             tentative = {
-                gi: {
-                    "budget": gs["budget_used"],
-                    "free": actual_free[gi],
-                    "count": gs["running_count"],
-                }
+                gi: _TentativeGpu(
+                    budget=gs.budget_used,
+                    free=actual_free[gi],
+                    count=gs.running_count,
+                )
                 for gi, gs in gpu_states.items()
             }
 
@@ -534,37 +586,37 @@ def run_parallel(
                 best_avail = -1.0
                 for gi, gs in gpu_states.items():
                     ts = tentative[gi]
-                    will_be_multi = ts["count"] >= 1
-                    cap = gs["budget_multi"] if will_be_multi else gs["total_gib"]
-                    avail = cap - ts["budget"]
-                    if avail < test["profiled_gib"]:
+                    will_be_multi = ts.count >= 1
+                    cap = gs.budget_multi if will_be_multi else gs.total_gib
+                    avail = cap - ts.budget
+                    if avail < test.profiled_gib:
                         continue
-                    if ts["free"] < test["profiled_gib"]:
+                    if ts.free < test.profiled_gib:
                         continue
                     if avail > best_avail:
                         best_gi = gi
                         best_avail = avail
                 if best_gi is not None:
                     to_launch.append((i, best_gi))
-                    tentative[best_gi]["budget"] += test["profiled_gib"]
-                    tentative[best_gi]["free"] -= test["profiled_gib"]
-                    tentative[best_gi]["count"] += 1
+                    tentative[best_gi].budget += test.profiled_gib
+                    tentative[best_gi].free -= test.profiled_gib
+                    tentative[best_gi].count += 1
 
             # Pop from pending in reverse to preserve indices, then reverse
             # back so longest-timeout tests launch first.
-            batch: list[dict] = []
+            batch: list[_TestEntry] = []
             for pending_idx, assigned_gpu in reversed(to_launch):
                 entry = pending.pop(pending_idx)
-                entry["assigned_gpu"] = assigned_gpu
+                entry.assigned_gpu = assigned_gpu
                 batch.append(entry)
             batch.reverse()
 
             for entry in batch:
-                w_id = entry["w_id"]
-                gi = entry["assigned_gpu"]
+                w_id = entry.w_id
+                gi = entry.assigned_gpu
+                assert gi is not None
                 is_vllm = (
-                    entry["requested_sglang_kv_tokens"] is None
-                    and entry["profiled_gib"] > 0
+                    entry.requested_sglang_kv_tokens is None and entry.profiled_gib > 0
                 )
 
                 # Per-GPU vLLM stagger — only between vLLM tests on the
@@ -575,22 +627,18 @@ def run_parallel(
                     if wait > 0:
                         time.sleep(wait)
 
-                gpu_states[gi]["budget_used"] += entry["profiled_gib"]
-                gpu_states[gi]["running_count"] += 1
-                info = _launch_test(entry, env_base)
-                running[w_id] = info
+                gpu_states[gi].budget_used += entry.profiled_gib
+                gpu_states[gi].running_count += 1
+                run_info = _launch_test(entry, env_base)
+                running[w_id] = run_info
 
                 if is_vllm:
                     last_vllm_launch[gi] = time.monotonic()
 
-                retry_str = (
-                    f" (retry {entry.get('retries', 0)})"
-                    if entry.get("retries")
-                    else ""
-                )
+                retry_str = f" (retry {entry.retries})" if entry.retries else ""
                 _print(
-                    f"[w{w_id}] {entry['name']} "
-                    f"(GPU{gi}, profiled {entry['profiled_gib']:.1f} GiB, "
+                    f"[w{w_id}] {entry.name} "
+                    f"(GPU{gi}, profiled {entry.profiled_gib:.1f} GiB, "
                     f"{_fmt_req(entry)}) RUNNING{retry_str}"
                 )
 
@@ -598,7 +646,7 @@ def run_parallel(
                 if now >= next_status and (running or pending):
                     parts = [_build_status(now)]
                     if pending:
-                        queued_str = ", ".join(f"w{t['w_id']}" for t in pending)
+                        queued_str = ", ".join(f"w{t.w_id}" for t in pending)
                         parts.append(f"[queued: {queued_str}]")
                     _print(" ".join(parts))
                     next_status = now + 10
@@ -607,9 +655,9 @@ def run_parallel(
         if now >= next_status and (running or pending):
             parts = [_build_status(now)]
             if pending:
-                queued_str = ", ".join(f"w{t['w_id']}" for t in pending)
+                queued_str = ", ".join(f"w{t.w_id}" for t in pending)
                 if not running:
-                    next_needed = pending[0]["profiled_gib"]
+                    next_needed = pending[0].profiled_gib
                     parts.append(f"[waiting for {next_needed:.1f} GiB free]")
                 parts.append(f"[queued: {queued_str}]")
             _print(" ".join(parts))
@@ -620,27 +668,25 @@ def run_parallel(
 
     # Summary
     wall_time = time.monotonic() - t0
-    sequential_time = sum(c["duration"] for c in completed)
-    n_passed = sum(1 for c in completed if c["passed"])
-    n_failed = sum(1 for c in completed if not c["passed"])
+    sequential_time = sum(c.duration for c in completed)
+    n_passed = sum(1 for c in completed if c.passed)
+    n_failed = sum(1 for c in completed if not c.passed)
 
-    completed.sort(key=lambda c: c["test"]["w_id"])
+    completed.sort(key=lambda c: c.test.w_id)
 
     _print()
     _print(f"{'=' * 27} short test summary info {'=' * 27}")
     for c in completed:
-        test = c["test"]
-        status = "PASSED" if c["passed"] else "FAILED"
-        w_id = test["w_id"]
-        duration = int(c["duration"])
-        timeout = int(test["timeout"])
-        retries = test.get("retries", 0)
+        test = c.test
+        status = "PASSED" if c.passed else "FAILED"
+        w_id = test.w_id
+        duration = int(c.duration)
+        timeout = int(test.timeout)
+        retries = test.retries
         retry_str = f" ({retries} retries)" if retries else ""
-        fail_str = (
-            f" - {c['fail_reason']}" if not c["passed"] and c.get("fail_reason") else ""
-        )
+        fail_str = f" - {c.fail_reason}" if not c.passed and c.fail_reason else ""
         _print(
-            f"{status} [w{w_id}] {test['name']} "
+            f"{status} [w{w_id}] {test.name} "
             f"[{duration}s/{timeout}s]{retry_str}{fail_str}"
         )
 
