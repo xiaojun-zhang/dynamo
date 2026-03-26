@@ -157,9 +157,9 @@ def pytest_runtestloop(session: pytest.Session) -> bool | None:
     vram_limit = config.getoption("max_vram_gib", default=None)
 
     if num_slots is None or vram_limit is None:
-        return None  # let normal pytest handle it
+        return None  # serial execution: let normal pytest handle it
 
-    # Delayed: see vram_utils pynvml note in pytest_configure
+    # Imports related to parallel execution must be delayed. See vram_utils pynvml note in pytest_configure for the full reasons
     from tests.utils.pytest_parallel_gpu import run_parallel
     from tests.utils.vram_utils import load_test_meta
 
@@ -171,12 +171,36 @@ def pytest_runtestloop(session: pytest.Session) -> bool | None:
     meta = load_test_meta()
     is_stream = config.getoption("capture", default="fd") == "no"
     gpu_indices = config.stash.get(_gpu_indices_key, None)
+
+    # Forward original CLI args to child pytest subprocesses so they
+    # inherit options like -s, -v, --image, --namespace, etc.
+    extra_args: list[str] = []
+    if is_stream:
+        extra_args.append("-s")
+    verbose = config.getoption("verbose", default=0)
+    if verbose >= 2:
+        extra_args.append("-vv")
+    elif verbose >= 1:
+        extra_args.append("-v")
+    for opt_name, cli_flag in [
+        ("image", "--image"),
+        ("namespace", "--namespace"),
+        ("framework", "--framework"),
+        ("profile", "--profile"),
+    ]:
+        val = config.getoption(opt_name, default=None)
+        if val is not None:
+            extra_args.extend([cli_flag, str(val)])
+    if config.getoption("skip_service_restart", default=None):
+        extra_args.append("--skip-service-restart")
+
     rc = run_parallel(
         test_ids=test_ids,
         meta=meta,
         max_vram_gib=vram_limit,
         num_slots=num_slots,
         gpu_indices=gpu_indices,
+        extra_pytest_args=extra_args or None,
         stream=is_stream,
     )
 
