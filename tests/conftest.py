@@ -22,12 +22,6 @@ from tests.utils.port_utils import (
     deallocate_ports,
 )
 from tests.utils.test_output import resolve_test_output_path
-from tests.utils.vram_utils import (
-    auto_worker_count,
-    detect_gpus,
-    print_gpu_plan,
-    write_test_meta,
-)
 
 _logger = logging.getLogger(__name__)
 
@@ -101,7 +95,10 @@ logging.basicConfig(
 
 
 # ---------------------------------------------------------------------------
-# GPU-Parallel: detect GPUs and configure xdist workers
+# GPU-serial and GPU-parallel: VRAM-aware test scheduling
+#
+# Activated only when both --max-vram-gib and -n auto are passed:
+#   pytest --max-vram-gib=48 -n auto -m "gpu_1 and sglang" tests/serve/
 # ---------------------------------------------------------------------------
 
 
@@ -110,6 +107,11 @@ def pytest_configure(config: pytest.Config) -> None:
     vram_limit = config.getoption("max_vram_gib", default=None)
     if vram_limit is None:
         return
+    # Delayed: vram_utils requires pynvml, otherwise conftest fails to load
+    # on CPU-only CI runners (e.g. ARM deploy tests) that lack nvidia-ml-py.
+    from tests.utils.pytest_parallel_gpu import _parse_gpu_indices
+    from tests.utils.vram_utils import auto_worker_count, detect_gpus
+
     gpus = detect_gpus()
     if gpus:
         config.stash[_gpu_parallel_gpus_key] = gpus
@@ -117,8 +119,6 @@ def pytest_configure(config: pytest.Config) -> None:
     # Parse --gpus into a list of indices (or None for all)
     gpus_raw = config.getoption("gpus", default="all")
     if gpus_raw and gpus_raw.strip().lower() != "all":
-        from tests.utils.pytest_parallel_gpu import _parse_gpu_indices
-
         config.stash[_gpu_indices_key] = _parse_gpu_indices(gpus_raw, gpus)
         selected_gpus = [
             g for g in gpus if g["index"] in config.stash[_gpu_indices_key]
@@ -159,6 +159,7 @@ def pytest_runtestloop(session: pytest.Session) -> bool | None:
     if num_slots is None or vram_limit is None:
         return None  # let normal pytest handle it
 
+    # Delayed: see vram_utils pynvml note in pytest_configure
     from tests.utils.pytest_parallel_gpu import run_parallel
     from tests.utils.vram_utils import load_test_meta
 
@@ -470,6 +471,9 @@ def pytest_collection_modifyitems(config, items):
 
     # Write test metadata for the GPU orchestrator to read.
     if vram_limit is not None:
+        # Delayed: see vram_utils pynvml note in pytest_configure
+        from tests.utils.vram_utils import print_gpu_plan, write_test_meta
+
         write_test_meta(items)
 
     # --dry-run: print run/skip breakdown and exit without executing tests.
