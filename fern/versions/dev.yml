@@ -104,6 +104,8 @@ navigation:
         path: ../pages-dev/benchmarks/benchmarking.md
       - page: Mocker Offline Trace Replay
         path: ../pages-dev/benchmarks/mocker-trace-replay.md
+      - page: Planner Replay Benchmarking
+        path: ../pages-dev/benchmarks/planner-replay-benchmarking.md
       - section: Testing
         contents:
           - page: Mocker
@@ -129,7 +131,9 @@ navigation:
           - page: SGLang Diffusion
             path: ../pages-dev/backends/sglang/sglang-diffusion.md
           - page: TRT-LLM Diffusion
-            path: ../pages-dev/backends/trtllm/trtllm-video-diffusion.md
+            path: ../pages-dev/backends/trtllm/trtllm-diffusion.md
+      - page: Chat Processor Options
+        path: ../pages-dev/agents/chat-processor-options.md
       - page: Tool Calling
         path: ../pages-dev/agents/tool-calling.md
       - page: Reasoning
@@ -192,6 +196,8 @@ navigation:
             path: ../pages-dev/backends/sglang/sglang-observability.md
           - page: Agentic Workloads
             path: ../pages-dev/backends/sglang/agents.md
+          - page: HiCache
+            path: ../pages-dev/backends/sglang/sglang-hicache.md
       - section: TensorRT-LLM
         path: ../pages-dev/backends/trtllm/README.md
         contents:
@@ -201,8 +207,8 @@ navigation:
             path: ../pages-dev/backends/trtllm/trtllm-examples.md
           - page: Observability
             path: ../pages-dev/backends/trtllm/trtllm-observability.md
-          - page: Video Diffusion (Experimental)
-            path: ../pages-dev/backends/trtllm/trtllm-video-diffusion.md
+          - page: Diffusion (Experimental)
+            path: ../pages-dev/backends/trtllm/trtllm-diffusion.md
           - page: Known Issues and Mitigations
             path: ../pages-dev/backends/trtllm/trtllm-known-issues.md
       - page: vLLM
@@ -215,13 +221,25 @@ navigation:
         contents:
           - page: Frontend Guide
             path: ../pages-dev/components/frontend/frontend-guide.md
+          - page: Tokenizer
+            path: ../pages-dev/components/frontend/Tokenizer.md
       - section: Router
         path: ../pages-dev/components/router/README.md
         contents:
           - page: Router Guide
             path: ../pages-dev/components/router/router-guide.md
+          - page: Routing Concepts
+            path: ../pages-dev/components/router/router-concepts.md
+          - page: Configuration and Tuning
+            path: ../pages-dev/components/router/router-configuration.md
+          - page: Disaggregated Serving
+            path: ../pages-dev/components/router/router-disaggregated-serving.md
+          - page: Router Operations
+            path: ../pages-dev/components/router/router-operations.md
           - page: Router Examples
             path: ../pages-dev/components/router/router-examples.md
+          - page: Standalone Indexer
+            path: ../pages-dev/components/router/standalone-indexer.md
           - page: KV Event Replay — Dynamo vs vLLM
             path: ../pages-dev/components/router/kv-event-replay-comparison.md
       - section: Planner
@@ -248,8 +266,6 @@ navigation:
     contents:
       - page: LMCache
         path: ../pages-dev/integrations/lmcache-integration.md
-      - page: SGLang HiCache
-        path: ../pages-dev/integrations/sglang-hicache.md
       - page: FlexKV
         path: ../pages-dev/integrations/flexkv-integration.md
       - page: KV Events for Custom Engines
