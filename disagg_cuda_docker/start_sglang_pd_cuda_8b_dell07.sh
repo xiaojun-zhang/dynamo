@@ -58,7 +58,8 @@ export PORT_ETCD=12379
 export PORT_HTTP=7001
 
 # PD worker GPUs — one PD (multimodal) worker per L40S.
-export PD_GPUS="1 2 3 4"
+# Override on the command line, e.g. PD_GPUS="1 2" ./start_...sh
+export PD_GPUS="${PD_GPUS:-1 2 3 4}"
 
 # RDMA NIC. mlx5_0 = eno17295np0 = 192.165.123.65 (RoCE fabric to the B70 host).
 export UCX_NIC=mlx5_0:1
@@ -244,7 +245,7 @@ for i in {1..60}; do
     sleep 5
     nreg=$(curl -s http://localhost:$PORT_HTTP/v1/models 2>/dev/null | grep -o "Qwen3-VL-8B-Instruct" | head -1 | wc -l)
     # /v1/models shows the model once it is served; check worker health for count
-    backends=$(curl -s http://localhost:$PORT_HTTP/health 2>/dev/null | grep -o "backend/generate" | wc -l)
+    backends=$(curl -s http://localhost:$PORT_HTTP/health 2>/dev/null | grep -o '"endpoint":"generate"' | wc -l)
     if [ "$backends" -ge "$NWANT" ]; then
         echo ""
         echo "All $NWANT PD workers registered. Now start the B70 encoder."

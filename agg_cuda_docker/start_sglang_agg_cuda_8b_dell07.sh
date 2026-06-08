@@ -41,7 +41,8 @@ export PORT_ETCD=12379
 export PORT_HTTP=7001
 
 # Aggregated EPD worker GPUs — one full EPD worker per L40S.
-export AGG_GPUS="1 2 3 4"
+# Override on the command line, e.g. AGG_GPUS="1 2" ./start_...sh
+export AGG_GPUS="${AGG_GPUS:-1 2 3 4}"
 
 # Model + name
 export MODEL=/mnt/weka/data/llm-d-models-pv/models--Qwen--Qwen3-VL-8B-Instruct
@@ -211,7 +212,7 @@ NWANT=$(echo $AGG_GPUS | wc -w)
 echo "Waiting for $NWANT aggregated EPD workers to register (8B loads in ~1-3 min each)..."
 for i in {1..60}; do
     sleep 5
-    backends=$(curl -s http://localhost:$PORT_HTTP/health 2>/dev/null | grep -o "backend/generate" | wc -l)
+    backends=$(curl -s http://localhost:$PORT_HTTP/health 2>/dev/null | grep -o '"endpoint":"generate"' | wc -l)
     if [ "$backends" -ge "$NWANT" ]; then
         echo ""
         echo "All $NWANT aggregated EPD workers registered."
