@@ -36,7 +36,7 @@ XPU encoder host is available.
 | NATS / etcd | `:14222` / `:12379` |
 | Per-worker ports | sys `8081+gpu`, KV-events `22080+gpu` |
 | Model path | `/mnt/weka/data/llm-d-models-pv/models--Qwen--Qwen3-VL-8B-Instruct` |
-| max-running / mem-fraction | `40` / `0.85` (tunable in the script) |
+| max-running / mem-fraction | `40` / `0.70` (override via `MAX_RUNNING` / `MEM_FRAC`) |
 
 ---
 
@@ -90,11 +90,23 @@ Common overrides (env vars):
 ```bash
 AGG_GPUS="1 2"  ./start_sglang_agg_cuda_8b_dell07.sh   # fewer workers
 MAX_RUNNING=64  ./start_sglang_agg_cuda_8b_dell07.sh   # raise concurrency
-MEM_FRAC=0.80   ./start_sglang_agg_cuda_8b_dell07.sh   # lower if a worker OOMs
+MEM_FRAC=0.60   ./start_sglang_agg_cuda_8b_dell07.sh   # lower further if a worker OOMs
 ```
 
 **No B70 encoder is needed for this mode** — aggregated workers do their own
 vision encoding.
+
+> **Memory note (important on L40S):** `mem-fraction-static` is the static pool
+> (weights + KV cache). The aggregated worker *also* runs the vision tower
+> in-process, and its activations for 8×1080p images are large — so the 44 GiB
+> L40S needs real headroom. **Default is `0.70`.** `0.85` (the H200 value) OOMs:
+> the worker dies with `torch.OutOfMemoryError` → scheduler `SIGQUIT` → all
+> requests fail (the bench then reports "All requests failed"). If a worker
+> still OOMs on heavy image workloads, drop to `MEM_FRAC=0.60`, or test a
+> lighter workload first (`--image-count 1 --image-resolution 720p`).
+>
+> After a crash, clear the dead workers before relaunching so GPU memory is
+> released: `pkill -9 -f "dynamo.sglang"`.
 
 ## 3. Verify the stack
 
