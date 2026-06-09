@@ -74,11 +74,16 @@ cd /robin/dynamo/disagg_cuda_docker
 ```
 
 Starts NATS + etcd + frontend, then 4 PD workers (GPUs 1-4). Waits until all 4
-`backend/generate` endpoints register, then exits 0. Logs in `./logs/`.
+`generate` endpoints register, then exits 0. Logs in `./logs/`.
 
-## 3. Start the encoder on the B70 host
+## 3. Start the encoder
 
-See `../disagg_xpu_docker/README.md`. **Do this after the PD side is up.**
+Two options — pick one:
+
+- **Cross-host (B70 XPU encoder):** see `../disagg_xpu_docker/README.md`.
+- **Same-host (encoder also on L40S):** see [§6 below](#6-same-host-disagg-encoder-on-l40s).
+
+**Either way, do this after the PD side is up.**
 
 ## 4. Verify the pipeline
 
@@ -121,14 +126,61 @@ grep -E "Successful requests|Request throughput|Median TTFT|Median TPOT|Total to
 ```
 
 > The encoder **must** be running before benchmarking image workloads — every
-> request needs the B70 to produce embeddings. Port is **7001**, not 8000.
+> request needs an encoder to produce embeddings. Port is **7001**, not 8000.
+
+---
+
+## 6. Same-host disagg (encoder on L40S)
+
+`start_sglang_encode_cuda_8b_dell07.sh` runs the **encode worker on a local
+L40S** instead of the remote B70 — so the full E/PD pipeline lives on this one
+host. Useful when no XPU encoder host is available, or to compare a CUDA encoder
+against the B70.
+
+```
+   [ dell07 — this host, all L40S ]
+   NATS + etcd + frontend(:7001)
+   encode worker (GPU 0)  --- NIXL (cuda_ipc, same-host) -->  4 PD workers (GPUs 1-4)
+```
+
+It registers into the **same etcd/nats** control plane and uses the **same
+`nixl-read` transfer mode** as the PD workers (E and PD *must* agree on the
+transfer mode), so it slots straight into the existing PD side. Key differences
+from the B70 encoder: it selects the GPU via `CUDA_VISIBLE_DEVICES` and keeps
+`cuda_ipc` in `UCX_TLS` for same-host GPU↔GPU P2P (the cross-host PD launch
+drops `cuda_ipc`; the XPU encoder uses `ze_copy`).
+
+**Run order** (inside the container, after the PD side is up):
+```bash
+cd /robin/dynamo/disagg_cuda_docker
+./start_sglang_pd_cuda_8b_dell07.sh          # control plane + PD workers (GPUs 1-4)
+./start_sglang_encode_cuda_8b_dell07.sh      # encoder on GPU 0 (same host)
+curl -s http://127.0.0.1:7001/v1/models      # confirm the model is served
+```
+
+Common overrides:
+```bash
+ENC_GPUS="0 5" ./start_sglang_encode_cuda_8b_dell07.sh   # 2 encoders (GPUs 0 and 5)
+MM_ATTN_BACKEND=flashinfer ./start_sglang_encode_cuda_8b_dell07.sh
+```
+
+Notes / gotchas:
+- **GPU layout:** PD uses GPUs 1-4, so the encoder defaults to **GPU 0**. Don't
+  overlap encoder and PD on the same card.
+- **Ports** are kept off the PD ranges (encoder: sys `8091+i`, kv `22090+i*3`,
+  side-channel `20099+i`) so they don't collide on this host.
+- **`cuda_ipc` P2P:** if the encoder log shows NCCL/UCX `cuda_ipc` errors (some
+  L40S pairs have peer access disabled), drop `cuda_ipc` from `UCX_TLS` in the
+  script — `cuda_copy` + verbs still works, just slower.
+- Benchmark exactly as in §5 — the encoder source (B70 vs local L40S) is
+  transparent to the frontend.
 
 ---
 
 ## Teardown
 
 ```bash
-pkill -9 -f "dynamo.sglang"     # PD workers
+pkill -9 -f "dynamo.sglang"     # PD workers + any same-host encoder
 pkill -f "dynamo.frontend"; pkill -f nats-server; pkill -f etcd
 ```
 Or just `exit` the container (`--rm` removes it; logs persist on the host via the mount).
