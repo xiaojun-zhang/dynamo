@@ -1,0 +1,7 @@
+# benchmark artifacts — never commit
+results/
+logs/
+*.json
+*.jsonl
+__pycache__/
+*.pyc
