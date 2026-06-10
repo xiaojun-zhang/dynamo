@@ -143,4 +143,6 @@ case "$ROLE" in
     echo "unknown role: $ROLE (agg|pd|encode)"; exit 2 ;;
 esac
 
-echo "  pid=$! log=$LOG"
+WPID=$!
+echo "$WPID" >> "$LOG_DIR/harness.pids"   # recorded so teardown kills only ours
+echo "  pid=$WPID log=$LOG"

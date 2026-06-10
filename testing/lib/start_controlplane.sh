@@ -17,6 +17,7 @@ export PORT_HTTP="${PORT_HTTP:-7001}"
 export PORT_ETCD_PEER="${PORT_ETCD_PEER:-12380}"
 LOG_DIR="${LOG_DIR:-$(pwd)/logs}"
 mkdir -p "$LOG_DIR"
+PIDFILE="$LOG_DIR/harness.pids"   # every proc we launch records its PID here
 
 # Proxy: bypass for localhost + this host + the XPU host fabric.
 export no_proxy="0.0.0.0,127.0.0.1,localhost,${IP_LOCAL},192.165.123.0/24,172.26.46.180,.intel.com"
@@ -24,15 +25,19 @@ export NO_PROXY="$no_proxy"
 
 echo "[controlplane] NATS:$PORT_NATS etcd:$PORT_ETCD frontend:$PORT_HTTP"
 
-# Clean any prior control plane (workers are killed by teardown.sh separately).
-pkill -f "dynamo.frontend" 2>/dev/null || true
-pkill -f "nats-server.*$PORT_NATS" 2>/dev/null || true
-pkill -f "etcd.*listen-client-urls.*$PORT_ETCD" 2>/dev/null || true
+# Clean any prior control plane — PORT-SCOPED so we only touch OUR stack on this
+# shared host (never a blanket pkill of every nats/etcd/frontend).
+pkill -f "dynamo.frontend.*--http-port $PORT_HTTP"   2>/dev/null || true
+pkill -f "nats-server.*-p $PORT_NATS"                2>/dev/null || true
+pkill -f "etcd.*listen-client-urls.*:$PORT_ETCD"     2>/dev/null || true
 sleep 2
+
+: > "$PIDFILE"   # fresh pidfile for this test
 
 echo "[controlplane] starting NATS..."
 nats-server -js -a 0.0.0.0 -p "$PORT_NATS" -m 18222 \
     > "$LOG_DIR/nats.log" 2>&1 &
+echo $! >> "$PIDFILE"
 sleep 2
 
 echo "[controlplane] starting etcd..."
@@ -45,6 +50,7 @@ etcd \
   --initial-cluster="default=http://0.0.0.0:$PORT_ETCD_PEER" \
   --data-dir="/tmp/etcd-harness-$$" \
   > "$LOG_DIR/etcd.log" 2>&1 &
+echo $! >> "$PIDFILE"
 sleep 5
 
 for i in $(seq 1 10); do
@@ -67,6 +73,7 @@ python3 -m dynamo.frontend \
     --router-mode kv \
     --router-reset-states \
     > "$LOG_DIR/frontend.log" 2>&1 &
+echo $! >> "$PIDFILE"
 sleep 5
 
 if curl -s -o /dev/null "http://localhost:$PORT_HTTP/health"; then

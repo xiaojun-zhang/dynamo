@@ -12,7 +12,7 @@ Cases (enable by passing the flag; absent = disabled):
   --case3-epd-xpu "E=1,2,4;PD=1,2,4"   E on XPU x PD on GPU
 
 Shared:
-  --model (required)        --rates "0.2,0.4,...,2.0"
+  --model (required)        --rates "0.2,...,2.0"   (default: 1.0)
   --num-prompts 32          --image-count 8       --image-resolution 1080p
   --gpus 0,1,2,3,4,5        --xpus 0,1,2,3        (xpus only needed for case3)
   --results-root DIR        --dry-run             --max-tests N
@@ -92,7 +92,9 @@ def main():
     ap.add_argument("--case1-agg", default="")
     ap.add_argument("--case2-epd-gpu", default="")
     ap.add_argument("--case3-epd-xpu", default="")
-    ap.add_argument("--rates", default="0.2,0.4,0.6,0.8,1.0,1.2,1.4,1.6,1.8,2.0")
+    ap.add_argument("--rates", default="1.0",
+                    help="comma list of request rates; default 1.0. "
+                         "e.g. 0.2,0.4,0.6,0.8,1.0,1.2,1.4,1.6,1.8,2.0")
     ap.add_argument("--num-prompts", type=int, default=32)
     ap.add_argument("--image-count", type=int, default=8)
     ap.add_argument("--image-resolution", default="1080p")

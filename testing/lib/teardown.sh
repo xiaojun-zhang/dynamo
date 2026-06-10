@@ -10,14 +10,38 @@
 set +e
 
 # ---------------------------------------------------------------
-# GPU server (dell07, this container): kill workers + control plane
+# GPU server (dell07, this container): kill OUR workers + control plane only.
+# We kill by recorded PID (harness.pids) + their process groups, then a
+# PORT-SCOPED backstop. We never blanket-pkill nats/etcd/frontend, because this
+# is a shared host with other tenants' stacks on different ports.
 # ---------------------------------------------------------------
-echo "[teardown] GPU server: killing workers + control plane..."
-pkill -9 -f "dynamo.sglang"            2>/dev/null   # agg / pd / encode workers
-pkill -f    "dynamo.frontend"          2>/dev/null
-pkill -f    "nats-server"              2>/dev/null
-pkill -f    "etcd.*listen-client-urls" 2>/dev/null
-sleep 3
+LOG_DIR="${LOG_DIR:-$(pwd)/logs}"
+PIDFILE="$LOG_DIR/harness.pids"
+PORT_NATS="${PORT_NATS:-14222}"
+PORT_ETCD="${PORT_ETCD:-12379}"
+PORT_HTTP="${PORT_HTTP:-7001}"
+
+echo "[teardown] GPU server: killing our recorded PIDs..."
+if [ -f "$PIDFILE" ]; then
+    # kill children first (workers), parents last; -TERM then -KILL.
+    for sig in TERM KILL; do
+        while read -r p; do
+            [ -n "$p" ] || continue
+            kill "-$sig" "$p" 2>/dev/null
+            # also the process group, to catch sglang's spawned subprocs
+            kill "-$sig" "-$p" 2>/dev/null
+        done < <(tac "$PIDFILE")
+        sleep 2
+    done
+fi
+
+# PORT-SCOPED backstop for the control plane only (never a blanket pkill).
+# Workers are reliably handled by the PID/process-group kill above (they carry
+# the etcd endpoint in env, not argv, so they can't be matched by port here).
+pkill -9 -f "dynamo.frontend.*--http-port $PORT_HTTP" 2>/dev/null
+pkill -9 -f "nats-server.*-p $PORT_NATS"              2>/dev/null
+pkill -9 -f "etcd.*listen-client-urls.*:$PORT_ETCD"   2>/dev/null
+sleep 2
 
 # ---------------------------------------------------------------
 # XPU server (giga01-b70): remove the remote encoder container

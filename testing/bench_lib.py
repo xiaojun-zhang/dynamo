@@ -249,6 +249,7 @@ def run_bench(served, num_prompts, image_count, image_res, rate,
         "--image-resolution", str(image_res),
         "--request-rate", str(rate),
         "--apply-chat-template", "--seed", "0",
+        "--disable-tqdm",   # no CR progress bars: keeps captured logs clean
         "--output-file", out_json,
     ]
     log(f"  bench: np={num_prompts} img={image_count} res={image_res} rate={rate}")
