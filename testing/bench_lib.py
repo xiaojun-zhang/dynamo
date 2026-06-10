@@ -36,8 +36,18 @@ MODELS = {
         "path": f"{WEKA}/models--Qwen--Qwen3-VL-8B-Instruct",
         "tp": 1, "kv": "auto", "mem_frac": 0.70},
     "Qwen/Qwen3-VL-32B-Instruct-FP8": {
+        # On one L40S the 32B-FP8 weights take ~33 GB, leaving only ~11 GB to split
+        # between KV cache and the prefill working set -- and those pull opposite
+        # ways. The 8-image/1080p workload is ~16.4k prompt tokens:
+        #   - mem_frac too low (0.80) -> KV cache only ~14k tokens < prompt ->
+        #     every request aborts ("Multimodal prompt is too long").
+        #   - mem_frac too high (0.92) -> KV fits but runtime OOMs.
+        # mem_frac 0.85 gives KV ~32k tokens (clears the prompt) with ~5.7 GB free.
+        # But prefilling all ~16k tokens in ONE chunk then OOMs the LLM MLP
+        # activation (~800 MiB short). chunked 8192 halves that prefill peak so it
+        # fits, without shrinking KV. (Models w/o "chunked" default to 16384.)
         "path": f"{WEKA}/models--Qwen--Qwen3-VL-32B-Instruct-FP8",
-        "tp": 1, "kv": "fp8_e4m3", "mem_frac": 0.80},
+        "tp": 1, "kv": "fp8_e4m3", "mem_frac": 0.85, "chunked": 8192},
     "Qwen/Qwen3-VL-32B-Instruct": {
         "path": f"{WEKA}/models--Qwen--Qwen3-VL-32B-Instruct",
         "tp": 2, "kv": "auto", "mem_frac": 0.85},
@@ -284,9 +294,36 @@ def run_bench(served, num_prompts, image_count, image_res, rate,
     out = (cp.stdout or "") + "\n" + (cp.stderr or "")
     block = _extract_result_block(out, label)
     ok = cp.returncode == 0 and "Successful requests" in out
+    if ok and _all_requests_aborted(out_json):
+        # bench_serving exits 0 and prints a result block even when the server
+        # aborts every request (e.g. "Multimodal prompt is too long" when the KV
+        # cache is smaller than the expanded prompt). The tell is that the
+        # RE-tokenized output (actual text returned) is ~1 token/request while the
+        # server-reported token count looks normal. Such a run is garbage, not ok.
+        log("  bench: all requests aborted (no real output) -> FAIL "
+            "(check worker log for 'Multimodal prompt is too long' / aborts)")
+        ok = False
     if not ok:
         log(f"  bench rc={cp.returncode} (see captured log)")
     return ok, (block or out[-4000:])
+
+
+def _all_requests_aborted(out_json):
+    """True if the bench JSON shows requests 'completed' but with essentially no
+    real generated text (retokenized output ~= request count, i.e. <=1 tok/req).
+    That's the signature of server-side aborts, not a genuine benchmark."""
+    try:
+        with open(out_json) as f:
+            d = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False  # no/garbled JSON -> let the existing rc check decide
+    completed = d.get("completed") or 0
+    retok = d.get("total_output_tokens_retokenized")
+    if completed <= 0 or retok is None:
+        return False
+    # Healthy runs generate many tokens/request; aborted runs return ~1 (just the
+    # finish marker). Flag when retokenized output is at most ~1 token per request.
+    return retok <= completed
 
 
 def _extract_result_block(text, label):

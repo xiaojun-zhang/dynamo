@@ -34,6 +34,11 @@ MODEL_PATH="${MODEL_PATH:?MODEL_PATH must be set by caller}"
 TP="${TP:-1}"
 KV_DTYPE="${KV_DTYPE:-auto}"
 MEM_FRAC="${MEM_FRAC:-0.70}"
+# Prefill chunk size: caps how many prompt tokens are prefilled in one forward,
+# which bounds the activation working-set peak. Big multimodal prompts (e.g. 8
+# images = ~16k tokens) can OOM the LLM MLP on a single GPU if prefilled whole;
+# a smaller chunk trades a little prefill speed for fitting in memory.
+CHUNKED_PREFILL="${CHUNKED_PREFILL:-16384}"
 TRANSFER_MODE="${TRANSFER_MODE:-nixl-read}"
 LOG_DIR="${LOG_DIR:-$(pwd)/logs}"
 mkdir -p "$LOG_DIR"
@@ -93,7 +98,7 @@ case "$ROLE" in
         --dtype auto \
         --kv-cache-dtype "$KV_DTYPE" \
         --max-running-requests "${MAX_RUNNING:-40}" \
-        --chunked-prefill-size 16384 \
+        --chunked-prefill-size "$CHUNKED_PREFILL" \
       > "$LOG" 2>&1 &
     ;;
   pd)

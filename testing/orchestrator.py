@@ -64,6 +64,10 @@ def main():
         "KV_DTYPE": info["kv"], "MEM_FRAC": str(info["mem_frac"]),
         "LOG_DIR": os.path.join(args.out_dir, "logs"),
     })
+    # Optional per-model prefill chunk size (bounds prefill activation peak so big
+    # multimodal prompts don't OOM the LLM MLP). Absent -> add_worker.sh default.
+    if info.get("chunked"):
+        env["CHUNKED_PREFILL"] = str(info["chunked"])
     if args.mm_attn_backend:
         env["MM_ATTN_BACKEND"] = args.mm_attn_backend
     os.makedirs(env["LOG_DIR"], exist_ok=True)
