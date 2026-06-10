@@ -197,9 +197,31 @@ def model_listed(served):
     return bool(body) and served in body
 
 
-def smoke_text(served, timeout=90):
+# A 64x64 white PNG as a data URL — a small but real-sized image to exercise the
+# encode->PD path. In disagg (epd) mode a text-only request hits the encode
+# worker and 500s with "multi_modal_data is required for the encode worker", so
+# the smoke MUST include an image there. (1x1 can trip preprocessor minimums, so
+# we use 64x64.)
+_TINY_PNG_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAS0lEQVR42u3PMQ0AAAwDoPo3"
+    "3UrYvQQckD4XAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB"
+    "AYHLAMpT0sIcNbcEAAAAAElFTkSuQmCC"
+)
+
+
+def smoke(served, multimodal, timeout=120):
+    """One tiny request to confirm the pipeline generates. If multimodal=True
+    (disagg E/PD), include an image so it flows through the encode worker."""
+    if multimodal:
+        content = [
+            {"type": "text", "text": "What is in this image?"},
+            {"type": "image_url", "image_url": {"url": _TINY_PNG_DATA_URL}},
+        ]
+    else:
+        content = "hi"
     payload = json.dumps({"model": served,
-                          "messages": [{"role": "user", "content": "hi"}],
+                          "messages": [{"role": "user", "content": content}],
                           "max_tokens": 4}).encode()
     req = urllib.request.Request(
         f"http://127.0.0.1:{PORT_HTTP}/v1/chat/completions",
@@ -212,13 +234,14 @@ def smoke_text(served, timeout=90):
         return False
 
 
-def wait_ready(served, n_workers, timeout_s=900, do_smoke=True):
-    """Block until n_workers 'generate' endpoints + model card + smoke ok."""
+def wait_ready(served, n_workers, timeout_s=900, do_smoke=True, multimodal=False):
+    """Block until n_workers 'generate' endpoints + model card + smoke ok.
+    multimodal=True (disagg E/PD) sends an image in the smoke request."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         n = n_generate_endpoints()
         if n >= n_workers and model_listed(served):
-            if not do_smoke or smoke_text(served):
+            if not do_smoke or smoke(served, multimodal):
                 log(f"  READY: {n}/{n_workers} endpoints, model listed"
                     + (", smoke ok" if do_smoke else ""))
                 return True

@@ -120,7 +120,11 @@ def main():
         if xpu_plan:
             _launch_xpu(env, xpu_plan, args.model)
 
-        if B.wait_ready(args.model, n_workers, timeout_s=900, do_smoke=True):
+        # disagg (epd_*) routes through the encode worker, which rejects
+        # text-only input — the smoke request must carry an image there.
+        mm = args.mode in ("epd_gpu", "epd_xpu")
+        if B.wait_ready(args.model, n_workers, timeout_s=900,
+                        do_smoke=True, multimodal=mm):
             break
         B.log(f"  not ready (attempt {attempt})")
         if attempt == 2:
