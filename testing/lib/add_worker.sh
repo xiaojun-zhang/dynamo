@@ -39,7 +39,28 @@ MEM_FRAC="${MEM_FRAC:-0.70}"
 # images = ~16k tokens) can OOM the LLM MLP on a single GPU if prefilled whole;
 # a smaller chunk trades a little prefill speed for fitting in memory.
 CHUNKED_PREFILL="${CHUNKED_PREFILL:-16384}"
+# nixl-read (PD pulls embeddings via RDMA on demand) is the default: it has no
+# pre-provisioned destination-buffer pool, so it does NOT hit "Timeout while
+# waiting for available buffer" under high E-worker fan-out (nixl-write exhausted
+# its fixed buffer pool with 4 E-workers and dropped ~70% of requests). Still
+# GPU-side as long as CuPy is in the container (run_gpu_container.sh installs it);
+# without CuPy NIXL silently falls back to a slow host-staged path.
+# Override with TRANSFER_MODE=nixl-write to A/B the write path.
 TRANSFER_MODE="${TRANSFER_MODE:-nixl-read}"
+
+# ---- PD-worker tunables (disagg). Defaults un-handicap PD vs an agg worker. ----
+# Old defaults (prefill_max=1, no max-running, radix off, mem_frac shared 0.70)
+# made the PD decode engine run half-empty (batch topped out at ~3 vs agg's ~6),
+# so a 2-PD pair lost to 2 agg workers even with an extra encode GPU. These let
+# PD batch prefills, fill the decode batch, and use the memory it saves by NOT
+# hosting the vision tower for a bigger KV cache.
+PD_PREFILL_MAX="${PD_PREFILL_MAX:-8}"          # prefill batch width (was hard 1)
+PD_MAX_RUNNING="${PD_MAX_RUNNING:-40}"         # decode batch cap (was unset/null)
+PD_MEM_FRAC="${PD_MEM_FRAC:-0.85}"             # PD has no vision tower -> bigger KV
+PD_RADIX="${PD_RADIX:-0}"                      # 1 = enable radix prefix cache on PD
+# Encoder: 1 serializes vision encode (safe but no batching); 0 lets it batch.
+VISION_ENCODE_SERIALIZE="${VISION_ENCODE_SERIALIZE:-0}"
+
 LOG_DIR="${LOG_DIR:-$(pwd)/logs}"
 mkdir -p "$LOG_DIR"
 
@@ -72,6 +93,10 @@ COMMON_ENV=(
 
 KV_EVENTS="{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:${KV_PORT}\",\"enable_kv_cache_events\":true}"
 
+# PD reserves no memory for a vision tower, so it can give more to the KV cache.
+EFF_MEM_FRAC="$MEM_FRAC"
+[ "$ROLE" = "pd" ] && EFF_MEM_FRAC="$PD_MEM_FRAC"
+
 # Common model args.
 COMMON_ARGS=(
   --model-path "$MODEL_PATH"
@@ -79,7 +104,7 @@ COMMON_ARGS=(
   --trust-remote-code
   --tp "$TP"
   --page-size 16
-  --mem-fraction-static "$MEM_FRAC"
+  --mem-fraction-static "$EFF_MEM_FRAC"
   --discovery-backend etcd
   --event-plane nats
   --log-level debug
@@ -103,7 +128,14 @@ case "$ROLE" in
     ;;
   pd)
     # Prefill+decode multimodal worker; reads embeddings via NIXL.
-    echo "[add_worker] pd   gpus=$GPUS tp=$TP sys=$SYS_PORT side=$SIDE_PORT -> $LOG"
+    # PD hosts no vision tower, so let it batch prefills, fill the decode batch,
+    # and use a bigger KV cache (PD_* tunables) instead of running half-empty.
+    PD_ARGS=(--prefill-max-requests "$PD_PREFILL_MAX"
+             --max-running-requests "$PD_MAX_RUNNING"
+             --chunked-prefill-size "$CHUNKED_PREFILL")
+    [ "$PD_RADIX" = "1" ] || PD_ARGS+=(--disable-radix-cache)
+    echo "[add_worker] pd   gpus=$GPUS tp=$TP sys=$SYS_PORT side=$SIDE_PORT "\
+"mem_frac=$EFF_MEM_FRAC prefill_max=$PD_PREFILL_MAX max_running=$PD_MAX_RUNNING radix=$PD_RADIX -> $LOG"
     env "${COMMON_ENV[@]}" \
       VLLM_NIXL_SIDE_CHANNEL_HOST="$IP_LOCAL_ROCE" \
       VLLM_NIXL_SIDE_CHANNEL_PORT="$SIDE_PORT" \
@@ -116,15 +148,15 @@ case "$ROLE" in
         --multimodal-worker \
         --embedding-transfer-mode "$TRANSFER_MODE" \
         --kv-cache-dtype "$KV_DTYPE" \
-        --prefill-max-requests 1 \
+        "${PD_ARGS[@]}" \
         --skip-tokenizer-init \
-        --disable-radix-cache \
         --disaggregation-transfer-backend nixl \
       > "$LOG" 2>&1 &
     ;;
   encode)
     # Encode-only worker on a local CUDA GPU; sends embeddings via NIXL (cuda_ipc).
-    echo "[add_worker] enc  gpus=$GPUS tp=$TP sys=$SYS_PORT side=$SIDE_PORT -> $LOG"
+    echo "[add_worker] enc  gpus=$GPUS tp=$TP sys=$SYS_PORT side=$SIDE_PORT "\
+"serialize=$VISION_ENCODE_SERIALIZE -> $LOG"
     env "${COMMON_ENV[@]}" \
       VLLM_NIXL_SIDE_CHANNEL_HOST="$IP_LOCAL_ROCE" \
       VLLM_NIXL_SIDE_CHANNEL_PORT="$SIDE_PORT" \
@@ -132,7 +164,7 @@ case "$ROLE" in
       UCX_NET_DEVICES="$UCX_NIC" \
       UCX_MEMTYPE_CACHE=0 \
       DYN_SGL_EMBEDDING_TRANSFER_MODE="$TRANSFER_MODE" \
-      VISION_ENCODE_SERIALIZE=1 \
+      VISION_ENCODE_SERIALIZE="$VISION_ENCODE_SERIALIZE" \
       python3 -m dynamo.sglang \
         "${COMMON_ARGS[@]}" \
         --multimodal-encode-worker \

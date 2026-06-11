@@ -43,6 +43,10 @@ def main():
     ap.add_argument("--num-prompts", type=int, default=32)
     ap.add_argument("--image-count", type=int, default=8)
     ap.add_argument("--image-resolution", default="1080p")
+    ap.add_argument("--output-len", type=int, default=256,
+                    help="random-output-len; raise to shift work to decode where "
+                         "E/PD disagg can win (e.g. 512,1024,2048)")
+    ap.add_argument("--input-len", type=int, default=128)
     ap.add_argument("--request-rate", default="1.0")
     ap.add_argument("--gpus", default="", help="candidate CUDA indices, csv")
     ap.add_argument("--xpus", default="", help="candidate XPU indices, csv (epd_xpu)")
@@ -141,7 +145,8 @@ def main():
     out_json = os.path.join(args.out_dir, f"bench_{safe}_r{args.request_rate}.json")
     ok, block = B.run_bench(
         args.model, args.num_prompts, args.image_count, args.image_resolution,
-        args.request_rate, out_json, label)
+        args.request_rate, out_json, label,
+        output_len=args.output_len, input_len=args.input_len)
     txt = os.path.join(args.out_dir, f"result_{safe}_r{args.request_rate}.txt")
     with open(txt, "w") as f:
         f.write(block)

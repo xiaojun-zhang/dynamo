@@ -61,6 +61,13 @@ for i in $(seq 1 10); do
 done
 
 echo "[controlplane] starting frontend..."
+# The FRONTEND is what buffers the inbound HTTP request body, so the body-size
+# limits must be set HERE -- not just on the workers (add_worker.sh). Without
+# these, large multimodal payloads (e.g. 32 images @1080p, or any 4k images ->
+# 100+ MB/request) fail at warmup with "Payload Too Large: Failed to buffer the
+# request body: length limit exceeded" before any inference runs. Overridable.
+DYN_HTTP_BODY_LIMIT_MB="${DYN_HTTP_BODY_LIMIT_MB:-1024}" \
+DYN_TCP_MAX_MESSAGE_SIZE="${DYN_TCP_MAX_MESSAGE_SIZE:-1073741824}" \
 NATS_SERVER="nats://$IP_LOCAL:$PORT_NATS" \
 ETCD_ENDPOINTS="http://$IP_LOCAL:$PORT_ETCD" \
 ETCD_LEASE_TTL=600 \

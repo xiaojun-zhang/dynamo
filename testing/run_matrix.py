@@ -98,6 +98,10 @@ def main():
     ap.add_argument("--num-prompts", type=int, default=32)
     ap.add_argument("--image-count", type=int, default=8)
     ap.add_argument("--image-resolution", default="1080p")
+    ap.add_argument("--output-len", type=int, default=256,
+                    help="random-output-len; raise (512/1024/2048) to shift work "
+                         "to decode where E/PD disagg can beat agg")
+    ap.add_argument("--input-len", type=int, default=128)
     ap.add_argument("--gpus", default="")
     ap.add_argument("--xpus", default="")
     ap.add_argument("--results-root", default=os.path.join(HERE, "results"))
@@ -156,6 +160,8 @@ def main():
                "--num-prompts", str(args.num_prompts),
                "--image-count", str(args.image_count),
                "--image-resolution", args.image_resolution,
+               "--output-len", str(args.output_len),
+               "--input-len", str(args.input_len),
                "--request-rate", t["rate"],
                "--gpus", args.gpus, "--xpus", args.xpus,
                "--out-dir", out_dir]

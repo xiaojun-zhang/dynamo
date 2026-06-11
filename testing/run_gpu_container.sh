@@ -69,6 +69,20 @@ for m in $DEAD_MINORS; do
         && echo "Removed dead /dev/nvidia$m inside container"
 done
 
+# Install CuPy so NIXL moves embeddings GPU-side. Without it, dynamo.nixl_connect
+# logs "Failed to load CuPy ... utilizing numpy" and every E->PD embedding
+# transfer is staged through host memory (Device->Host->...->Device), adding
+# ~hundreds of ms/request on the critical path -- which masks any disagg benefit.
+# This container is --rm (recreated each launch), so the install must live here,
+# not be done by hand. Image is CUDA 12.8 -> cupy-cuda12x. Idempotent: skips if
+# already importable. Non-fatal so a pip/proxy hiccup doesn't block the container.
+echo "Ensuring CuPy (cupy-cuda12x) is present for GPU-side NIXL transfers..."
+docker exec robin_sglang_dynamo_l40 bash -lc \
+  'python3 -c "import cupy" 2>/dev/null && { echo "  cupy already present"; exit 0; }; \
+   pip install --no-cache-dir cupy-cuda12x \
+     && python3 -c "import cupy; print(\"  cupy\", cupy.__version__, \"OK\")" \
+     || echo "  WARN: cupy install failed -- disagg NIXL will fall back to CPU/numpy"'
+
 echo ""
 echo "Started container 'robin_sglang_dynamo_l40'. Verify GPUs + CUDA:"
 echo "  docker exec -it robin_sglang_dynamo_l40 bash -lc \\"

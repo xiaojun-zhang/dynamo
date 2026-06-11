@@ -267,17 +267,24 @@ RESULT_HDR = re.compile(r"=+ Serving Benchmark Result")
 
 
 def run_bench(served, num_prompts, image_count, image_res, rate,
-              out_json, label, timeout_s=2400):
+              out_json, label, output_len=256, input_len=128, timeout_s=2400):
     """Run sglang.bench_serving; return (ok, result_text_block).
     result_text_block is the captured '==== Serving Benchmark Result ===='
-    section (with the label injected), or '' if not found."""
+    section (with the label injected), or '' if not found.
+
+    output_len/input_len are exposed so the workload can be shifted between
+    decode-heavy (long output) and prefill/vision-heavy (many images, short
+    output). For E/PD disagg the dominant benefit is queue reduction once the
+    aggregated baseline saturates -- not output length per se (the reference
+    workloads win at output_len=256)."""
     cmd = [
         "python3", "-m", "sglang.bench_serving",
         "--model", served, "--backend", "sglang-oai-chat",
         "--host", "127.0.0.1", "--port", str(PORT_HTTP),
         "--dataset-name", "image",
         "--num-prompts", str(num_prompts),
-        "--random-input-len", "128", "--random-output-len", "256",
+        "--random-input-len", str(input_len),
+        "--random-output-len", str(output_len),
         "--image-count", str(image_count),
         "--image-resolution", str(image_res),
         "--request-rate", str(rate),
