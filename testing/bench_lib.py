@@ -49,11 +49,25 @@ MODELS = {
         "path": f"{WEKA}/models--Qwen--Qwen3-VL-32B-Instruct-FP8",
         "tp": 1, "kv": "fp8_e4m3", "mem_frac": 0.85, "chunked": 8192},
     "Qwen/Qwen3-VL-32B-Instruct": {
+        # bf16 ~64 GB / TP2 = ~32 GB/GPU weights on 44 GB L40S. mem_frac 0.85 left
+        # ~0 free at CUDA-graph capture -> OOM. 0.78 leaves room for the graph +
+        # activation working set; chunked 8192 caps the 8-image (~16k tok) prefill.
         "path": f"{WEKA}/models--Qwen--Qwen3-VL-32B-Instruct",
-        "tp": 2, "kv": "auto", "mem_frac": 0.85},
+        "tp": 2, "kv": "auto", "mem_frac": 0.78, "chunked": 8192},
     "Qwen/Qwen3-VL-235B-A22B-Instruct-FP8": {
+        # NOTE: does NOT run on 8x L40S (46 GB). Two constraints have no overlap
+        # with what fits in memory:
+        #   - 16 attention heads -> TP must divide 16: {1,2,4,8} (TP6 aborts:
+        #     "16 is not divisible by 6").
+        #   - FP8 block_n=128 quant -> each shard must stay 128-divisible; TP8
+        #     gives a gate/up shard of 192 and aborts ("192 not divisible by 128").
+        #     => only TP {1,2,4} are numerically valid.
+        #   - ~222 GB weights need >= 5 cards on 46 GB GPUs, i.e. TP8.
+        # Valid-TP and fits-memory don't intersect. Ran on H20 96 GB (LMSYS) at
+        # TP4 (55 GB/GPU < 96). Kept here for reference; tp left at 8 but it WILL
+        # fail to load on L40S -- use 32B for the disagg study on this host.
         "path": f"{WEKA}/models--Qwen--Qwen3-VL-235B-A22B-Instruct-FP8",
-        "tp": 6, "kv": "fp8_e4m3", "mem_frac": 0.90},
+        "tp": 8, "kv": "fp8_e4m3", "mem_frac": 0.90, "chunked": 8192},
 }
 
 

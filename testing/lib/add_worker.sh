@@ -97,12 +97,19 @@ KV_EVENTS="{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*
 EFF_MEM_FRAC="$MEM_FRAC"
 [ "$ROLE" = "pd" ] && EFF_MEM_FRAC="$PD_MEM_FRAC"
 
+# Encoders are ALWAYS TP1 (the orchestrator places them on a single GPU). The
+# model's TP (e.g. 2 for 32B) applies only to agg/pd. Passing --tp 2 to an
+# encoder makes it wait forever for a 2nd TP peer that never joins
+# ("DistStoreError: Timed out ... 1/2 clients joined") -> readiness timeout.
+EFF_TP="$TP"
+[ "$ROLE" = "encode" ] && EFF_TP=1
+
 # Common model args.
 COMMON_ARGS=(
   --model-path "$MODEL_PATH"
   --served-model-name "$SERVED"
   --trust-remote-code
-  --tp "$TP"
+  --tp "$EFF_TP"
   --page-size 16
   --mem-fraction-static "$EFF_MEM_FRAC"
   --discovery-backend etcd
