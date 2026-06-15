@@ -12,7 +12,7 @@
 #     model_served    : Qwen/Qwen3-VL-8B-Instruct
 #
 # Env:
-#   MODEL_PATH (required), XPU_SSH_PASS (for sshpass), XPU_IMAGE, XPU_CONTAINER,
+#   MODEL_PATH (required), XPU_IMAGE, XPU_CONTAINER,
 #   IP_LOCAL (dell07 mgmt), PORT_NATS, PORT_ETCD, TRANSFER_MODE,
 #   SIDE_CHANNEL_BASE, KV_EVENT_BASE, SYS_PORT_BASE,
 #   XPU_LOG_DIR (shared-NFS /home path for encoder logs; falls back to /tmp)
@@ -37,14 +37,14 @@ SYS_PORT_BASE="${SYS_PORT_BASE:-8091}"
 # default (this is the B70 image's optimized path). Override only to experiment.
 MM_ATTN_BACKEND="${MM_ATTN_BACKEND:-xpu_attn}"
 
-SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=10)
-if [ -n "${XPU_SSH_PASS:-}" ]; then
-    command -v sshpass >/dev/null || { echo "ERROR: XPU_SSH_PASS set but sshpass not installed"; exit 3; }
-    export SSHPASS="$XPU_SSH_PASS"
-    SSH=(sshpass -e ssh "${SSH_OPTS[@]}" "${XPU_USER}@${XPU_HOST}")
-else
-    SSH=(ssh "${SSH_OPTS[@]}" "${XPU_USER}@${XPU_HOST}")
-fi
+# Key-based SSH only (set up the key for ${XPU_USER}@${XPU_HOST}). BatchMode
+# makes a missing/wrong key fail fast instead of hanging on a password prompt.
+# -F /dev/null skips ~/.ssh/config: in the GPU container it's mounted from the
+# host with non-root owner / group-writable perms, which ssh rejects ("Bad owner
+# or permissions"). -i names the key (override via XPU_SSH_KEY).
+XPU_SSH_KEY="${XPU_SSH_KEY:-/root/.ssh/id_ed25519}"
+SSH_OPTS=(-F /dev/null -i "$XPU_SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes)
+SSH=(ssh "${SSH_OPTS[@]}" "${XPU_USER}@${XPU_HOST}")
 
 echo "[xpu] launching fresh container '$XPU_CONTAINER' on $XPU_HOST ..."
 # Remove any stale container with our name, then docker-run a fresh detached one.

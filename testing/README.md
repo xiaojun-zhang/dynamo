@@ -58,11 +58,11 @@ If `instances × TP` exceeds the idle devices in your `--gpus` list, that test i
 ## Prerequisites
 
 - Run inside the dell07 GPU container (has `dynamo.sglang`, `sglang.bench_serving`).
-- For **case 3** (XPU encoders): `sshpass` installed in the container, and the
-  SSH password exported (never committed):
+- For **case 3** (XPU encoders): key-based SSH from the container to the B70 XPU
+  host (`h-zheng@172.26.46.180`). Set up the key once; the harness uses plain
+  `ssh` (BatchMode) — no password env var. Verify with:
   ```bash
-  apt-get update && apt-get install -y sshpass   # if missing
-  export XPU_SSH_PASS='********'                 # password for h-zheng@giga01-b70
+  ssh h-zheng@172.26.46.180 'xpu-smi stats -d 0 | grep -i "GPU Memory Used"'
   ```
 
 ## Run ONE test (orchestrator.py)
@@ -79,8 +79,7 @@ python3 orchestrator.py --mode epd_gpu --model Qwen/Qwen3-VL-8B-Instruct \
     --e-instances 2 --pd-instances 2 --gpus 0,1,2,3,4,5 \
     --request-rate 1.0 --out-dir results/manual_2e2pd
 
-# disagg E-on-XPU + PD-on-GPU: 1 XPU encoder + 4 GPU PD
-export XPU_SSH_PASS=...   # required
+# disagg E-on-XPU + PD-on-GPU: 1 XPU encoder + 4 GPU PD  (key-based ssh to B70)
 python3 orchestrator.py --mode epd_xpu --model Qwen/Qwen3-VL-8B-Instruct \
     --e-instances 1 --pd-instances 4 --gpus 1,2,3,4 --xpus 0 \
     --request-rate 1.0 --out-dir results/manual_1expu_4pd
@@ -103,8 +102,7 @@ python3 run_matrix.py --model Qwen/Qwen3-VL-8B-Instruct \
     --gpus 0,1,2,3,4,5 --rates 0.2,0.4,0.6,0.8,1.0 \
     --case1-agg 1,2,4
 
-# case 2 + 3: E×PD grids, full rate range 0.2..2.0
-export XPU_SSH_PASS=...
+# case 2 + 3: E×PD grids, full rate range 0.2..2.0  (case 3 uses key-based ssh to B70)
 python3 run_matrix.py --model Qwen/Qwen3-VL-8B-Instruct \
     --gpus 0,1,2,3,4,5 --xpus 0,1,2,3 \
     --case2-epd-gpu "E=1,2,4;PD=1,2,4" \

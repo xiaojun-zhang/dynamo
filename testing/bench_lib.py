@@ -142,21 +142,25 @@ def idle_gpus(candidates, max_used_mib=1000):
     return free
 
 
+def _ssh_opts():
+    """SSH options for reaching the XPU host with key auth.
+    -F /dev/null skips ~/.ssh/config (in the GPU container that file is mounted
+    from the host with non-root owner / group-writable perms, which ssh rejects
+    with "Bad owner or permissions"). -i names the key explicitly. XPU_SSH_KEY
+    overrides the default key path."""
+    key = os.environ.get("XPU_SSH_KEY", "/root/.ssh/id_ed25519")
+    return ["-F", "/dev/null", "-i", key,
+            "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
+            "-o", "BatchMode=yes"]
+
+
 def _ssh_xpu(remote_cmd):
-    opts = ["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10"]
+    """SSH to the XPU host via key auth (set up the key for XPU_SSH_USER@XPU_HOST)."""
+    opts = _ssh_opts()
     user = os.environ.get("XPU_SSH_USER", "h-zheng")
     target = f"{user}@{XPU_HOST}"
-    pw = os.environ.get("XPU_SSH_PASS")
-    env = dict(os.environ)
-    if pw:
-        if subprocess.run(["which", "sshpass"], capture_output=True).returncode != 0:
-            raise SystemExit("XPU_SSH_PASS set but sshpass not installed "
-                             "(apt-get install -y sshpass) or use key auth.")
-        env["SSHPASS"] = pw
-        cmd = ["sshpass", "-e", "ssh", *opts, target, remote_cmd]
-    else:
-        cmd = ["ssh", *opts, target, remote_cmd]
-    return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+    cmd = ["ssh", *opts, target, remote_cmd]
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
 
 def _xpu_used_mib(idx):
