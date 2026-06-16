@@ -25,6 +25,9 @@ set -e
 ROLE="$1"; GPUS="$2"; SYS_PORT="$3"; KV_PORT="$4"; SIDE_PORT="$5"; SERVED="$6"
 [ -z "$SERVED" ] && { echo "usage: add_worker.sh <role> <gpus> <sys> <kv> <side> <served>"; exit 2; }
 
+# GPU-host network identity. The orchestrator resolves these per host (from a
+# profile keyed on hostname; see bench_lib.gpu_host_profile) and passes them in;
+# the dell07 values are only the standalone fallback for manual invocation.
 IP_LOCAL="${IP_LOCAL:-172.26.46.178}"
 IP_LOCAL_ROCE="${IP_LOCAL_ROCE:-192.165.123.65}"
 PORT_NATS="${PORT_NATS:-14222}"

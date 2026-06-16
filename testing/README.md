@@ -11,10 +11,29 @@ All three use **one shared control plane** (NATS/etcd/frontend); N worker
 instances register into it and the kv-router load-balances. The benchmark client
 hits the single frontend at `:7001`.
 
+## Which GPU server
+
+The GPU host's network identity (mgmt IP for the control plane, RoCE IP for the
+NIXL side-channel, UCX NIC) is the only thing that changes between GPU servers.
+It lives in a profile table in `bench_lib.py` (`GPU_HOSTS`) and is resolved per
+run:
+
+1. `$GPU_HOST_PROFILE` if set (e.g. `dell07`, `h200`), else
+2. auto-matched against the hostname, else
+3. error (never silently runs as the wrong host).
+
+Any single field is overridable via `$IP_LOCAL` / `$IP_LOCAL_ROCE` / `$UCX_NIC`
+— which is also how to run on a host with no profile entry yet. To add a server
+permanently, add an entry to `GPU_HOSTS` with its `match` substring(s),
+`mgmt_ip`, `roce_ip`, and `ucx_nic`. Built in today: **dell07** (8× L40S) and
+**h200** (`sc09super21-h200`, 8× H200 143 GB). The orchestrator logs the
+resolved profile at the top of each run.
+
 ## Where things run
 
-- **Run the harness INSIDE the dell07 GPU container** (`robin_sglang_dynamo_l40`):
-  GPU workers are child processes there, so teardown is `pkill`.
+- **Run the harness INSIDE the GPU container** (on dell07:
+  `robin_sglang_dynamo_l40`): GPU workers are child processes there, so teardown
+  is `pkill`. The same harness runs on the H200 host for `agg` / `epd_gpu`.
 - **XPU encoders (case 3)** are launched on `sc09giga01-b70` (172.26.46.180) by
   SSHing and `docker run`-ing a fresh B70 container per test, then `docker exec`
   one encoder per XPU. Torn down with `docker rm -f`.
@@ -50,7 +69,7 @@ testing/
 | `Qwen/Qwen3-VL-8B-Instruct` | bf16 | 1 |
 | `Qwen/Qwen3-VL-32B-Instruct-FP8` | fp8 | 1 |
 | `Qwen/Qwen3-VL-32B-Instruct` | bf16 | 2 |
-| `Qwen/Qwen3-VL-235B-A22B-Instruct-FP8` | fp8 | 6 |
+| `Qwen/Qwen3-VL-235B-A22B-Instruct-FP8` | fp8 | 4 (H200 only) |
 
 If `instances × TP` exceeds the idle devices in your `--gpus` list, that test is
 **skipped and logged** (never silently shrunk). Encoders are always TP1.

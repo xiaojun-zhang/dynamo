@@ -61,12 +61,28 @@ def main():
     gpu_cands = B.parse_devs(args.gpus)
     xpu_cands = B.parse_devs(args.xpus)
 
+    # ---- resolve which GPU server we're running on (mgmt/RoCE IP + UCX NIC) ----
+    # The shell pieces default these to dell07; pass the resolved profile so the
+    # control plane binds and workers dial THIS host. Auto-detected from the
+    # hostname, overridable via $GPU_HOST_PROFILE / $IP_LOCAL / $IP_LOCAL_ROCE /
+    # $UCX_NIC (see bench_lib.gpu_host_profile).
+    host = B.gpu_host_profile()
+    B.log(f"GPU host profile: {host['name']} "
+          f"(mgmt={host['mgmt_ip']} roce={host['roce_ip']} nic={host['ucx_nic']})")
+
     # ---- env shared by the shell pieces ----
     env = dict(os.environ)
     env.update({
         "MODEL_PATH": info["path"], "TP": str(tp),
         "KV_DTYPE": info["kv"], "MEM_FRAC": str(info["mem_frac"]),
         "LOG_DIR": os.path.join(args.out_dir, "logs"),
+        "IP_LOCAL": host["mgmt_ip"],
+        "IP_LOCAL_ROCE": host["roce_ip"],
+        "UCX_NIC": host["ucx_nic"],
+        # Keep the shell pieces' frontend port in lockstep with bench_lib's client
+        # side, so a $PORT_HTTP override (e.g. to dodge a stale :7001) applies to
+        # the control plane and teardown too, not just the bench client.
+        "PORT_HTTP": str(B.PORT_HTTP),
     })
     # Optional per-model prefill chunk size (bounds prefill activation peak so big
     # multimodal prompts don't OOM the LLM MLP). Absent -> add_worker.sh default.
@@ -131,7 +147,11 @@ def main():
         # disagg (epd_*) routes through the encode worker, which rejects
         # text-only input — the smoke request must carry an image there.
         mm = args.mode in ("epd_gpu", "epd_xpu")
-        if B.wait_ready(args.model, n_workers, timeout_s=900,
+        # Big models load slowly: 235B-FP8 takes ~14 min just for weights
+        # (~35s/shard x 24) before CUDA-graph capture, so the default 15-min gate
+        # has no margin. Default 30 min; override with $READY_TIMEOUT.
+        ready_timeout = int(os.environ.get("READY_TIMEOUT", "1800"))
+        if B.wait_ready(args.model, n_workers, timeout_s=ready_timeout,
                         do_smoke=True, multimodal=mm):
             break
         B.log(f"  not ready (attempt {attempt})")

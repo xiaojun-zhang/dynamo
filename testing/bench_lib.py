@@ -16,6 +16,7 @@ Covers:
 import json
 import os
 import re
+import socket
 import subprocess
 import time
 import urllib.request
@@ -23,12 +24,80 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.join(HERE, "lib")
 
-# ---- deployment facts (dell07) ----
-IP_LOCAL_MGMT = "172.26.46.178"
-PORT_HTTP = 7001
+# ---- deployment facts ----
+# Frontend HTTP port. Single source of truth: the orchestrator passes this same
+# value to the shell pieces (start_controlplane / teardown) so client and server
+# always agree. Overridable via $PORT_HTTP -- bump it to dodge a stale frontend
+# squatting on the default (an interrupted run can leave :7001 bound).
+PORT_HTTP = int(os.environ.get("PORT_HTTP", "7011"))
 XPU_HOST = os.environ.get("XPU_HOST", "172.26.46.180")
 
 WEKA = "/mnt/weka/data/llm-d-models-pv"
+
+# ---- GPU host profiles (the ONLY thing that changes between GPU servers) ----
+# A worker's network identity comes from three facts about the host it runs on:
+#   mgmt_ip  : management IP the control plane (etcd/NATS) binds + advertises and
+#              workers dial for NATS/etcd.
+#   roce_ip  : RoCE-fabric IP used as the NIXL side-channel host (E<->PD embedding
+#              transfer in epd_gpu mode). Must be a local IP on `ucx_nic`.
+#   ucx_nic  : UCX RDMA device:port (UCX_NET_DEVICES).
+# Everything else (model table, ports, placement, bench) is host-independent, so
+# moving the harness to a new GPU server only needs a profile entry here.
+#
+# Resolution order (see gpu_host_profile): $GPU_HOST_PROFILE -> hostname
+# auto-match -> error. Any single field can be overridden by $IP_LOCAL /
+# $IP_LOCAL_ROCE / $UCX_NIC (e.g. to run on a host with no profile entry yet).
+GPU_HOSTS = {
+    "dell07": {
+        "match": ("dell07",),          # substrings tested against the hostname
+        "mgmt_ip": "172.26.46.178",
+        "roce_ip": "192.165.123.65",
+        "ucx_nic": "mlx5_0:1",
+    },
+    "h200": {
+        # sc09super21-h200: 8x H200 143 GB. mlx5_0 (enp25s0np0) is the ACTIVE
+        # RoCE port carrying 192.165.123.48 on the shared .123/24 fabric.
+        "match": ("h200",),
+        "mgmt_ip": "172.26.46.133",
+        "roce_ip": "192.165.123.48",
+        "ucx_nic": "mlx5_0:1",
+    },
+}
+
+
+def gpu_host_profile():
+    """Resolve this GPU host's network profile (mgmt_ip / roce_ip / ucx_nic).
+
+    Order: $GPU_HOST_PROFILE names an entry in GPU_HOSTS; otherwise the hostname
+    is matched against each profile's `match` substrings. Individual fields are
+    overridable by $IP_LOCAL / $IP_LOCAL_ROCE / $UCX_NIC -- which is also the way
+    to run on a host that has no profile entry yet. Raises if it can't resolve
+    all three, rather than silently falling back to the wrong host."""
+    name = os.environ.get("GPU_HOST_PROFILE", "").strip()
+    prof = None
+    if name:
+        if name not in GPU_HOSTS:
+            raise SystemExit(
+                f"Unknown GPU_HOST_PROFILE '{name}'. Known: {', '.join(GPU_HOSTS)}")
+        prof = GPU_HOSTS[name]
+    else:
+        host = socket.gethostname().lower()
+        for key, p in GPU_HOSTS.items():
+            if any(m in host for m in p["match"]):
+                prof, name = p, key
+                break
+    base = prof or {}
+    mgmt = os.environ.get("IP_LOCAL") or base.get("mgmt_ip")
+    roce = os.environ.get("IP_LOCAL_ROCE") or base.get("roce_ip")
+    nic = os.environ.get("UCX_NIC") or base.get("ucx_nic")
+    if not (mgmt and roce and nic):
+        raise SystemExit(
+            f"Could not resolve a GPU host profile (hostname="
+            f"'{socket.gethostname()}'). Set $GPU_HOST_PROFILE to one of "
+            f"{{{', '.join(GPU_HOSTS)}}}, or set $IP_LOCAL / $IP_LOCAL_ROCE / "
+            f"$UCX_NIC explicitly.")
+    return {"name": name or "custom", "mgmt_ip": mgmt,
+            "roce_ip": roce, "ucx_nic": nic}
 
 # ---- model table: tp = GPUs per instance, kv = kv-cache dtype ----
 MODELS = {
@@ -55,19 +124,21 @@ MODELS = {
         "path": f"{WEKA}/models--Qwen--Qwen3-VL-32B-Instruct",
         "tp": 2, "kv": "auto", "mem_frac": 0.78, "chunked": 8192},
     "Qwen/Qwen3-VL-235B-A22B-Instruct-FP8": {
-        # NOTE: does NOT run on 8x L40S (46 GB). Two constraints have no overlap
-        # with what fits in memory:
-        #   - 16 attention heads -> TP must divide 16: {1,2,4,8} (TP6 aborts:
-        #     "16 is not divisible by 6").
+        # Numerically valid TP is {1,2,4} only:
+        #   - 16 attention heads -> TP must divide 16 (TP6 aborts "16 not
+        #     divisible by 6").
         #   - FP8 block_n=128 quant -> each shard must stay 128-divisible; TP8
         #     gives a gate/up shard of 192 and aborts ("192 not divisible by 128").
-        #     => only TP {1,2,4} are numerically valid.
-        #   - ~222 GB weights need >= 5 cards on 46 GB GPUs, i.e. TP8.
-        # Valid-TP and fits-memory don't intersect. Ran on H20 96 GB (LMSYS) at
-        # TP4 (55 GB/GPU < 96). Kept here for reference; tp left at 8 but it WILL
-        # fail to load on L40S -- use 32B for the disagg study on this host.
+        # ~222 GB weights need >= 5 cards on 46 GB L40S, but TP{5,6,7} are invalid
+        # and TP8's shard isn't 128-divisible, so it does NOT run on L40S at all.
+        # On H200 (143 GB) it fits at TP4: ~55 GB/GPU weights on 4 cards. mem_frac
+        # 0.90 leaves ample room for KV + the chunked-8192 prefill working set.
+        # chunked 32768: on H200 (~91 GB free/GPU after the ~59 GB TP4 weights)
+        # there's no activation-OOM pressure, so the prefill token budget can hold
+        # ~2 full 8-image/1080p prompts (~16k tok each) per step -> prefill can
+        # batch >1 request instead of splitting a single prompt across chunks.
         "path": f"{WEKA}/models--Qwen--Qwen3-VL-235B-A22B-Instruct-FP8",
-        "tp": 8, "kv": "fp8_e4m3", "mem_frac": 0.90, "chunked": 8192},
+        "tp": 4, "kv": "fp8_e4m3", "mem_frac": 0.90, "chunked": 32768},
 }
 
 

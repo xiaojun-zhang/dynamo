@@ -83,6 +83,38 @@ docker exec robin_sglang_dynamo_l40 bash -lc \
      && python3 -c "import cupy; print(\"  cupy\", cupy.__version__, \"OK\")" \
      || echo "  WARN: cupy install failed -- disagg NIXL will fall back to CPU/numpy"'
 
+# Patch SGLang's Qwen3-VL MoE weight loader so the ENCODE-only worker can load
+# Qwen3-VL-235B-A22B (MoE). In encoder-only mode the model has no self.model
+# (qwen3_vl.py builds it only when NOT encoder_only), but the MoE load_weights
+# does `hasattr(self.model, "start_layer")` -- Python evaluates self.model BEFORE
+# hasattr, so nn.Module.__getattr__ raises AttributeError and the encode worker
+# dies at load ("'Qwen3VLMoeForConditionalGeneration' object has no attribute
+# 'model'"). Dense 8B/32B encoders are unaffected. Fix: guard self.model's
+# existence first. Same --rm reasoning as CuPy above -- must re-apply per launch.
+# Idempotent (skips if already guarded); non-fatal; only touches the one pattern.
+echo "Patching SGLang Qwen3-VL MoE loader for encoder-only 235B (idempotent)..."
+# NB: -i is REQUIRED -- without it `docker exec` does not attach stdin, so the
+# heredoc never reaches `python3 -`, the script reads empty input, does nothing,
+# and exits 0 (so even the `|| WARN` below stays silent). That's exactly how an
+# earlier launch printed the header then patched nothing.
+docker exec -i robin_sglang_dynamo_l40 python3 - <<'PYEOF' || echo "  WARN: SGLang MoE encoder patch failed -- 235B E/PD encode will crash at load"
+old = 'and hasattr(self.model, "start_layer")'
+new = 'and hasattr(self, "model") and hasattr(self.model, "start_layer")'
+for f in ("/opt/sglang/python/sglang/srt/models/qwen3_vl_moe.py",
+          "/opt/sglang/python/sglang/srt/models/qwen3_vl.py"):
+    try:
+        s = open(f).read()
+    except OSError as e:
+        print(f"  skip {f}: {e}"); continue
+    if new in s:
+        print(f"  already patched: {f}")
+    elif old in s:
+        open(f, "w").write(s.replace(old, new))
+        print(f"  patched: {f}")
+    else:
+        print(f"  WARN pattern absent (sglang version changed?): {f}")
+PYEOF
+
 echo ""
 echo "Started container 'robin_sglang_dynamo_l40'. Verify GPUs + CUDA:"
 echo "  docker exec -it robin_sglang_dynamo_l40 bash -lc \\"
