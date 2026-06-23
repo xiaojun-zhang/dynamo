@@ -3136,3 +3136,202 @@ InternVL3.5-8B img4 validation 3E1PD:  0.81 req/s, mean TTFT 1.18s, mean E2E 1.3
   very large embedding handoff seen in the Qwen3-VL-2B 32/64/96-image sweeps.
 - This is the target case where E/PD disaggregation beats aggregation on the
   recovered H200 server.
+
+### Try: InternVL3.5-38B TP1, 4 images smoke
+
+Run root:
+
+```text
+results/native_sglang_matrix_20260623_internvl35_38b_tp1_img4_r05_mc4_smoke
+results/native_sglang_matrix_20260623_internvl35_38b_tp1_img4_r05_mc4_fullcases
+```
+
+Reason for this try:
+
+- `InternVL3_5-8B` produced a validated E/PD win, but it is small compared with
+  the 235B Qwen model.
+- `InternVL3_5-38B` is local (`~72G` checkpoint) and is a better next step for
+  testing whether the E/PD advantage holds for a larger dense InternVL model.
+- User requested TP1 on GPU `0`, with GPUs `1,2,3` available as encoders.
+- The first launch was interrupted while running only `agg 3e1pd`; its partial
+  processes were cleaned. The restarted matrix includes `agg`, `1e1pd`,
+  `2e1pd`, and `3e1pd`.
+
+Planned workload and knobs:
+
+```bash
+MODEL=/mnt/weka/data/llm-d-models-pv/hub/models--OpenGVLab--InternVL3_5-38B/snapshots/main
+SERVED=$MODEL
+CHAT_TEMPLATE=internvl-2-5
+BENCH_PYTHONPATH=/robin/dynamo/testing/bench_patches
+NUM_PROMPTS=8 IMAGE_COUNT=4 IMAGE_RES=1080p RATE=0.5
+INPUT_LEN=128 OUTPUT_LEN=16
+CHUNKED=65536 MAX_PREFILL_TOKENS=65536
+MAX_RUNNING=16 PREFILL_MAX=2 MAX_CONCURRENCY=4
+KV_DTYPE=fp8_e4m3 MEM_FRAC=0.80 AGG_MEM_FRAC=0.80 PD_MEM_FRAC=0.80 ENC_MEM_FRAC=0.70
+AGG_EXTRA_ARGS="--cuda-graph-max-bs 16 --max-total-tokens 250000"
+PD_EXTRA_ARGS="--cuda-graph-max-bs 16 --max-total-tokens 250000"
+--agg-gpus 0 --pd-gpus 0 --enc-gpus-3e1pd 1,2,3
+--enc-gpus-1e1pd 1 --enc-gpus-2e1pd 1,2 --enc-gpus-3e1pd 1,2,3
+```
+
+Memory note:
+
+- 38B TP1 with the previous 800k-token cap would be too high for one H200:
+  weights `~71.5 GiB` plus FP8 KV `~97.7 GiB` before runtime overhead.
+- This smoke uses `--max-total-tokens 250000`, which reduces FP8 KV to about
+  `30.5 GiB`, leaving enough headroom for weights and runtime overhead on a
+  140 GiB H200.
+
+Results:
+
+```text
+1AGG:
+Successful requests: 8
+Total images: 32
+Request throughput: 0.43 req/s
+Input token throughput: 4012.24 tok/s
+Mean TTFT: 4636.42 ms
+Mean E2E: 6352.16 ms
+Mean TPOT: 416.73 ms
+Peak concurrent requests: 4
+
+1E1PD:
+Successful requests: 8
+Total images: 32
+Request throughput: 0.45 req/s
+Input token throughput: 4224.14 tok/s
+Mean TTFT: 2813.41 ms
+Mean E2E: 3666.50 ms
+Mean TPOT: 140.67 ms
+Peak concurrent requests: 5
+
+2E1PD:
+Successful requests: 8
+Total images: 32
+Request throughput: 0.47 req/s
+Input token throughput: 4357.70 tok/s
+Mean TTFT: 2269.73 ms
+Mean E2E: 2763.34 ms
+Mean TPOT: 115.24 ms
+Peak concurrent requests: 4
+
+3E1PD:
+Successful requests: 8
+Total images: 32
+Request throughput: 0.47 req/s
+Input token throughput: 4373.29 tok/s
+Mean TTFT: 2241.29 ms
+Mean E2E: 2700.84 ms
+Mean TPOT: 105.11 ms
+Peak concurrent requests: 3
+```
+
+Analysis:
+
+- All four requested 38B TP1 cases completed with the placement requested by
+  the user: AGG/PD on GPU `0`, encoders on GPUs `1`, `1,2`, and `1,2,3`.
+- Relative to 1AGG, 3E1PD improves request throughput by about `9%`, mean TTFT
+  by about `52%`, and mean E2E latency by about `57%`.
+- 2E1PD and 3E1PD are effectively tied on throughput at this small sample size;
+  3E1PD has slightly better latency. The next useful run is a 32-request
+  validation at rate 1.0 and max concurrency 8 with the same placement.
+
+### Try: InternVL3.5-38B TP1, 4 images r1.0 validation
+
+Run root:
+
+```text
+results/native_sglang_matrix_20260623_internvl35_38b_tp1_img4_r1_mc8_validation_fullcases
+```
+
+Reason for this try:
+
+- The previous 38B smoke used rate `0.5` and only 8 requests. User asked to test
+  rate `1.0` instead.
+- This run keeps the requested placement: AGG/PD on GPU `0`; encoder GPUs
+  `1`, `1,2`, and `1,2,3` for 1E1PD, 2E1PD, and 3E1PD.
+- GPUs `4` and `7` were still occupied by unrelated work and were not touched.
+
+Workload and knobs:
+
+```bash
+MODEL=/mnt/weka/data/llm-d-models-pv/hub/models--OpenGVLab--InternVL3_5-38B/snapshots/main
+SERVED=$MODEL
+CHAT_TEMPLATE=internvl-2-5
+BENCH_PYTHONPATH=/robin/dynamo/testing/bench_patches
+NUM_PROMPTS=32 IMAGE_COUNT=4 IMAGE_RES=1080p RATE=1.0
+INPUT_LEN=128 OUTPUT_LEN=16
+CHUNKED=65536 MAX_PREFILL_TOKENS=65536
+MAX_RUNNING=32 PREFILL_MAX=4 MAX_CONCURRENCY=8
+KV_DTYPE=fp8_e4m3 MEM_FRAC=0.80 AGG_MEM_FRAC=0.80 PD_MEM_FRAC=0.80 ENC_MEM_FRAC=0.70
+AGG_EXTRA_ARGS="--cuda-graph-max-bs 32 --max-total-tokens 250000"
+PD_EXTRA_ARGS="--cuda-graph-max-bs 32 --max-total-tokens 250000"
+--agg-gpus 0 --pd-gpus 0
+--enc-gpus-1e1pd 1 --enc-gpus-2e1pd 1,2 --enc-gpus-3e1pd 1,2,3
+```
+
+Results:
+
+```text
+1AGG:
+Successful requests: 32
+Total images: 128
+Request throughput: 0.47 req/s
+Input token throughput: 4330.27 tok/s
+Mean TTFT: 10702.57 ms
+Mean E2E: 14295.13 ms
+Mean TPOT: 1338.72 ms
+Peak concurrent requests: 13
+
+1E1PD:
+Successful requests: 32
+Total images: 128
+Request throughput: 0.60 req/s
+Input token throughput: 5586.14 tok/s
+Mean TTFT: 5845.32 ms
+Mean E2E: 9944.85 ms
+Mean TPOT: 737.34 ms
+Peak concurrent requests: 13
+
+2E1PD:
+Successful requests: 32
+Total images: 128
+Request throughput: 0.66 req/s
+Input token throughput: 6186.62 tok/s
+Mean TTFT: 4763.65 ms
+Mean E2E: 7583.27 ms
+Mean TPOT: 532.67 ms
+Peak concurrent requests: 13
+
+3E1PD:
+Successful requests: 32
+Total images: 128
+Request throughput: 0.69 req/s
+Input token throughput: 6461.64 tok/s
+Mean TTFT: 4422.47 ms
+Mean E2E: 6905.50 ms
+Mean TPOT: 455.67 ms
+Peak concurrent requests: 11
+```
+
+Analysis:
+
+```text
+InternVL3.5-38B TP1 img4 r1.0 1AGG:   0.47 req/s, mean TTFT 10.70s, mean E2E 14.30s
+InternVL3.5-38B TP1 img4 r1.0 1E1PD:  0.60 req/s, mean TTFT  5.85s, mean E2E  9.94s
+InternVL3.5-38B TP1 img4 r1.0 2E1PD:  0.66 req/s, mean TTFT  4.76s, mean E2E  7.58s
+InternVL3.5-38B TP1 img4 r1.0 3E1PD:  0.69 req/s, mean TTFT  4.42s, mean E2E  6.91s
+```
+
+- This is a validated 38B case where E/PD disaggregation beats aggregation:
+  3E1PD improves request throughput by about `47%`, reduces mean TTFT by about
+  `59%`, and reduces mean E2E latency by about `52%` relative to 1AGG.
+- Scaling from 1 to 3 encoders is monotonic on both throughput and latency for
+  this workload. The gain from 2E to 3E is smaller than from 1E to 2E, so 2E1PD
+  is the more GPU-efficient point, while 3E1PD is the best absolute result.
+- The r1.0 run strengthens the smoke conclusion: with 38B TP1, the single AGG
+  server accumulates queueing on mixed vision+language work, while offloading
+  image encoding keeps the PD language server more responsive.
+- Post-run process check found no stale `native_sglang`, `launch_server`, or
+  benchmark processes. GPUs `0,1,2,3` returned to idle after teardown.
