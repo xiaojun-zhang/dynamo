@@ -420,9 +420,10 @@ class InternVLProcessor(BaseMultimodalProcessor):
         video_data = getattr(request_obj, "video_data", None) or []
 
         # Handle processor_output and precomputed_embedding formats
-        if isinstance(input_text, list) or self._has_special_format(
-            image_data, video_data
-        ):
+        has_special_format = self._has_special_format(image_data, video_data)
+        if isinstance(input_text, list) and not has_special_format:
+            input_text = self.tokenizer.decode(input_text)
+        if isinstance(input_text, list) or has_special_format:
             return await self._process_special_format(
                 image_data=image_data,
                 video_data=video_data,

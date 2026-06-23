@@ -22,6 +22,7 @@ XPUS_CSV="$1"; SERVED="$2"
 [ -z "$SERVED" ] && { echo "usage: add_encoder_xpu.sh <xpu_csv> <served>"; exit 2; }
 
 XPU_HOST="${XPU_HOST:-172.26.46.180}"
+XPU_HOST_PROFILE="${XPU_HOST_PROFILE:-}"
 XPU_USER="${XPU_SSH_USER:-h-zheng}"
 XPU_IMAGE="${XPU_IMAGE:-hm_dynamo_b70_pr26460:latest}"
 XPU_CONTAINER="${XPU_CONTAINER:-harness_b70_enc}"
@@ -30,12 +31,69 @@ PORT_NATS="${PORT_NATS:-14222}"
 PORT_ETCD="${PORT_ETCD:-12379}"
 MODEL_PATH="${MODEL_PATH:?MODEL_PATH must be set}"
 TRANSFER_MODE="${TRANSFER_MODE:-nixl-read}"
+CHAT_TEMPLATE="${CHAT_TEMPLATE:-qwen2-vl}"
+LOG_LEVEL="${LOG_LEVEL:-debug}"
+USE_SGLANG_TOKENIZER="${USE_SGLANG_TOKENIZER:-0}"
+ENC_MEM_FRAC="${ENC_MEM_FRAC:-0.5}"
+ENC_EXTRA_ARGS="${ENC_EXTRA_ARGS:-}"
+XPU_APPLY_PATCHES="${XPU_APPLY_PATCHES:-0}"
+XPU_PATCH_SERVER_ARGS="${XPU_PATCH_SERVER_ARGS:-0}"
+XPU_PATCH_DIR="${XPU_PATCH_DIR:-/home/h-zheng/robin/dynamo/testing/container_patch_work}"
 SIDE_CHANNEL_BASE="${SIDE_CHANNEL_BASE:-20099}"
 KV_EVENT_BASE="${KV_EVENT_BASE:-22090}"
 SYS_PORT_BASE="${SYS_PORT_BASE:-8091}"
-# XPU encoders ALWAYS use the PR26460 xpu_attn vision-attention backend by
-# default (this is the B70 image's optimized path). Override only to experiment.
-MM_ATTN_BACKEND="${MM_ATTN_BACKEND:-xpu_attn}"
+detect_xpu_profile() {
+    if [ -n "$XPU_HOST_PROFILE" ]; then
+        printf '%s\n' "$XPU_HOST_PROFILE"
+        return
+    fi
+    case "$(printf '%s' "$XPU_HOST" | tr '[:upper:]' '[:lower:]')" in
+        *b60*|*intel02*|172.26.46.171) printf '%s\n' "b60" ;;
+        *) printf '%s\n' "b70" ;;
+    esac
+}
+
+XPU_PROFILE="$(detect_xpu_profile)"
+
+# XPU encoders use the image's custom multimodal attention backend by default.
+# If MM_ATTN_BACKEND is explicitly set to an empty string, the launcher omits
+# --mm-attention-backend and lets SGLang choose its default.
+if [ "${MM_ATTN_BACKEND+x}" != "x" ]; then
+    MM_ATTN_BACKEND="xpu_attn"
+fi
+
+resolve_xpu_fabric() {
+    local xpu="$1"
+    case "$XPU_PROFILE" in
+        b60)
+            if [ "$xpu" -gt 3 ]; then
+                echo "[xpu] ERROR: B60 profile only has XPU ids 0-3, got $xpu" >&2
+                exit 2
+            fi
+            if [ "$xpu" -lt 2 ]; then
+                NIC="mlx5_0:1"; XIP="192.165.123.64"
+            else
+                NIC="mlx5_1:1"; XIP="192.165.123.70"
+            fi
+            ;;
+        b70)
+            if [ "$xpu" -gt 7 ]; then
+                echo "[xpu] ERROR: B70 profile only has XPU ids 0-7, got $xpu" >&2
+                exit 2
+            fi
+            # Historical B70 mapping used by this harness.
+            if [ "$xpu" -lt 4 ]; then
+                NIC="mlx5_0:1"; XIP="192.165.123.40"
+            else
+                NIC="mlx5_2:1"; XIP="192.165.123.37"
+            fi
+            ;;
+        *)
+            echo "[xpu] ERROR: unknown XPU_HOST_PROFILE=$XPU_PROFILE" >&2
+            exit 2
+            ;;
+    esac
+}
 
 # Key-based SSH only (set up the key for ${XPU_USER}@${XPU_HOST}). BatchMode
 # makes a missing/wrong key fail fast instead of hanging on a password prompt.
@@ -68,14 +126,59 @@ echo "[xpu] launching fresh container '$XPU_CONTAINER' on $XPU_HOST ..."
 XPU_LOG_DIR="${XPU_LOG_DIR:-/tmp}"
 "${SSH[@]}" "mkdir -p '$XPU_LOG_DIR' 2>/dev/null || true"
 echo "[xpu] encoder logs -> $XPU_LOG_DIR/encode_xpu_<n>.log (shared NFS)"
+echo "[xpu] host profile = $XPU_PROFILE ($XPU_HOST)"
 echo "[xpu] mm-attention-backend = $MM_ATTN_BACKEND"
+echo "[xpu] chat-template = $CHAT_TEMPLATE"
+echo "[xpu] use-sglang-tokenizer = $USE_SGLANG_TOKENIZER"
 
-# B70 NUMA->NIC mapping: XPU 0-3 -> mlx5_0/.40 ; XPU 4-7 -> mlx5_2/.37
+SGLANG_TOKENIZER_ARG=""
+[ "$USE_SGLANG_TOKENIZER" = "1" ] && SGLANG_TOKENIZER_ARG="--use-sglang-tokenizer"
+
+if [ "$XPU_APPLY_PATCHES" = "1" ]; then
+    echo "[xpu] applying SGLang patches from $XPU_PATCH_DIR"
+    if [ "$XPU_PATCH_SERVER_ARGS" = "1" ]; then
+        echo "[xpu] patching server_args.py"
+        "${SSH[@]}" "docker exec $XPU_CONTAINER bash -lc '\
+            set -e
+            test -f $XPU_PATCH_DIR/server_args.py
+            cp $XPU_PATCH_DIR/server_args.py /opt/sglang/python/sglang/srt/server_args.py
+            python3 -m py_compile /opt/sglang/python/sglang/srt/server_args.py
+        '" || { echo "[xpu] server_args patch install failed"; exit 4; }
+    else
+        echo "[xpu] keeping image server_args.py"
+    fi
+    "${SSH[@]}" "docker exec $XPU_CONTAINER bash -lc '\
+        set -e
+        test -f $XPU_PATCH_DIR/patch_server_args_xpu.py
+        python3 $XPU_PATCH_DIR/patch_server_args_xpu.py
+        python3 -m py_compile /opt/sglang/python/sglang/srt/server_args.py
+    '" || { echo "[xpu] server_args xpu patch failed"; exit 4; }
+    "${SSH[@]}" "docker exec $XPU_CONTAINER bash -lc '\
+        set -e
+        test -f $XPU_PATCH_DIR/patch_dynamo_encode_worker_xpu.py
+        python3 $XPU_PATCH_DIR/patch_dynamo_encode_worker_xpu.py
+        python3 -m py_compile /usr/local/lib/python3.12/dist-packages/dynamo/sglang/request_handlers/multimodal/encode_worker_handler.py
+    '" || { echo "[xpu] dynamo encode worker patch failed"; exit 4; }
+    "${SSH[@]}" "docker exec $XPU_CONTAINER bash -lc '\
+        set -e
+        test -f $XPU_PATCH_DIR/encode_server.py
+        test -f $XPU_PATCH_DIR/internvl.py
+        test -f $XPU_PATCH_DIR/internvl_processor.py
+        cp $XPU_PATCH_DIR/encode_server.py /opt/sglang/python/sglang/srt/disaggregation/encode_server.py
+        cp $XPU_PATCH_DIR/internvl.py /opt/sglang/python/sglang/srt/models/internvl.py
+        cp $XPU_PATCH_DIR/internvl_processor.py /opt/sglang/python/sglang/srt/multimodal/processors/internvl.py
+        python3 -m py_compile \
+          /opt/sglang/python/sglang/srt/disaggregation/encode_server.py \
+          /opt/sglang/python/sglang/srt/models/internvl.py \
+          /opt/sglang/python/sglang/srt/multimodal/processors/internvl.py
+    '" || { echo "[xpu] patch install failed"; exit 4; }
+fi
+
 i=0
 IFS=',' read -ra XS <<< "$XPUS_CSV"
 for XPU in "${XS[@]}"; do
     sys=$((SYS_PORT_BASE + i)); kv=$((KV_EVENT_BASE + i*3)); side=$((SIDE_CHANNEL_BASE + i))
-    if [ "$XPU" -lt 4 ]; then NIC="mlx5_0:1"; XIP="192.165.123.40"; else NIC="mlx5_2:1"; XIP="192.165.123.37"; fi
+    resolve_xpu_fabric "$XPU"
     echo "[xpu] exec encoder on XPU $XPU (nic=$NIC ip=$XIP sys=$sys kv=$kv side=$side)"
     "${SSH[@]}" "docker exec -d $XPU_CONTAINER bash -lc '\
         ZE_AFFINITY_MASK=$XPU DYN_SYSTEM_PORT=$sys \
@@ -92,11 +195,13 @@ for XPU in "${XS[@]}"; do
         python3 -m dynamo.sglang \
           --multimodal-encode-worker --model-path $MODEL_PATH \
           --served-model-name $SERVED --enable-multimodal --encoder-only \
-          --chat-template qwen2-vl --embedding-transfer-mode $TRANSFER_MODE \
+          --chat-template $CHAT_TEMPLATE --embedding-transfer-mode $TRANSFER_MODE \
+          $SGLANG_TOKENIZER_ARG \
           --skip-tokenizer-init --trust-remote-code --page-size 16 \
-          --mem-fraction-static 0.5 ${MM_ATTN_BACKEND:+--mm-attention-backend $MM_ATTN_BACKEND} \
+          --mem-fraction-static $ENC_MEM_FRAC ${MM_ATTN_BACKEND:+--mm-attention-backend $MM_ATTN_BACKEND} \
           --discovery-backend etcd --event-plane nats \
-          --disaggregation-transfer-backend nixl --log-level debug \
+          --disaggregation-transfer-backend nixl --log-level $LOG_LEVEL \
+          $ENC_EXTRA_ARGS \
           > $XPU_LOG_DIR/encode_xpu_${XPU}.log 2>&1' " \
       || echo "[xpu] WARN: exec on XPU $XPU returned nonzero"
     i=$((i+1))

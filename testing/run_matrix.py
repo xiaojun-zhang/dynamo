@@ -102,6 +102,8 @@ def main():
                     help="random-output-len; raise (512/1024/2048) to shift work "
                          "to decode where E/PD disagg can beat agg")
     ap.add_argument("--input-len", type=int, default=128)
+    ap.add_argument("--max-concurrency", type=int, default=0,
+                    help="optional bench_serving --max-concurrency")
     ap.add_argument("--gpus", default="")
     ap.add_argument("--xpus", default="")
     ap.add_argument("--results-root", default=os.path.join(HERE, "results"))
@@ -165,6 +167,8 @@ def main():
                "--request-rate", t["rate"],
                "--gpus", args.gpus, "--xpus", args.xpus,
                "--out-dir", out_dir]
+        if args.max_concurrency:
+            cmd += ["--max-concurrency", str(args.max_concurrency)]
         if args.mm_attn_backend:
             cmd += ["--mm-attn-backend", args.mm_attn_backend]
         # Capture the orchestrator's narration per test (device selection,

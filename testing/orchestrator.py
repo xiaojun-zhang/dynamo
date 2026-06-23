@@ -48,6 +48,8 @@ def main():
                          "E/PD disagg can win (e.g. 512,1024,2048)")
     ap.add_argument("--input-len", type=int, default=128)
     ap.add_argument("--request-rate", default="1.0")
+    ap.add_argument("--max-concurrency", type=int, default=0,
+                    help="optional bench_serving --max-concurrency")
     ap.add_argument("--gpus", default="", help="candidate CUDA indices, csv")
     ap.add_argument("--xpus", default="", help="candidate XPU indices, csv (epd_xpu)")
     ap.add_argument("--out-dir", required=True)
@@ -88,6 +90,23 @@ def main():
     # multimodal prompts don't OOM the LLM MLP). Absent -> add_worker.sh default.
     if info.get("chunked"):
         env["CHUNKED_PREFILL"] = str(info["chunked"])
+    for key, env_name in (
+        ("chat_template", "CHAT_TEMPLATE"),
+        ("max_prefill_tokens", "MAX_PREFILL_TOKENS"),
+        ("max_total_tokens", "MAX_TOTAL_TOKENS"),
+        ("cuda_graph_max_bs", "CUDA_GRAPH_MAX_BS"),
+        ("max_running", "MAX_RUNNING"),
+        ("pd_prefill_max", "PD_PREFILL_MAX"),
+        ("pd_max_running", "PD_MAX_RUNNING"),
+        ("pd_mem_frac", "PD_MEM_FRAC"),
+        ("enc_mem_frac", "ENC_MEM_FRAC"),
+        ("xpu_apply_patches", "XPU_APPLY_PATCHES"),
+        ("use_sglang_tokenizer", "USE_SGLANG_TOKENIZER"),
+        ("dyn_chat_processor", "DYN_CHAT_PROCESSOR"),
+        ("router_mode", "ROUTER_MODE"),
+    ):
+        if info.get(key) is not None:
+            env[env_name] = str(info[key])
     if args.mm_attn_backend:
         env["MM_ATTN_BACKEND"] = args.mm_attn_backend
     os.makedirs(env["LOG_DIR"], exist_ok=True)
@@ -166,7 +185,8 @@ def main():
     ok, block = B.run_bench(
         args.model, args.num_prompts, args.image_count, args.image_resolution,
         args.request_rate, out_json, label,
-        output_len=args.output_len, input_len=args.input_len)
+        output_len=args.output_len, input_len=args.input_len,
+        max_concurrency=args.max_concurrency or None)
     txt = os.path.join(args.out_dir, f"result_{safe}_r{args.request_rate}.txt")
     with open(txt, "w") as f:
         f.write(block)

@@ -37,6 +37,15 @@ MODEL_PATH="${MODEL_PATH:?MODEL_PATH must be set by caller}"
 TP="${TP:-1}"
 KV_DTYPE="${KV_DTYPE:-auto}"
 MEM_FRAC="${MEM_FRAC:-0.70}"
+CHAT_TEMPLATE="${CHAT_TEMPLATE:-qwen2-vl}"
+LOG_LEVEL="${LOG_LEVEL:-debug}"
+USE_SGLANG_TOKENIZER="${USE_SGLANG_TOKENIZER:-0}"
+MAX_PREFILL_TOKENS="${MAX_PREFILL_TOKENS:-}"
+MAX_TOTAL_TOKENS="${MAX_TOTAL_TOKENS:-}"
+CUDA_GRAPH_MAX_BS="${CUDA_GRAPH_MAX_BS:-}"
+AGG_EXTRA_ARGS="${AGG_EXTRA_ARGS:-}"
+PD_EXTRA_ARGS="${PD_EXTRA_ARGS:-}"
+ENC_EXTRA_ARGS="${ENC_EXTRA_ARGS:-}"
 # Prefill chunk size: caps how many prompt tokens are prefilled in one forward,
 # which bounds the activation working-set peak. Big multimodal prompts (e.g. 8
 # images = ~16k tokens) can OOM the LLM MLP on a single GPU if prefilled whole;
@@ -60,6 +69,7 @@ TRANSFER_MODE="${TRANSFER_MODE:-nixl-read}"
 PD_PREFILL_MAX="${PD_PREFILL_MAX:-8}"          # prefill batch width (was hard 1)
 PD_MAX_RUNNING="${PD_MAX_RUNNING:-40}"         # decode batch cap (was unset/null)
 PD_MEM_FRAC="${PD_MEM_FRAC:-0.85}"             # PD has no vision tower -> bigger KV
+ENC_MEM_FRAC="${ENC_MEM_FRAC:-$MEM_FRAC}"
 PD_RADIX="${PD_RADIX:-0}"                      # 1 = enable radix prefix cache on PD
 # Encoder: 1 serializes vision encode (safe but no batching); 0 lets it batch.
 VISION_ENCODE_SERIALIZE="${VISION_ENCODE_SERIALIZE:-0}"
@@ -99,6 +109,7 @@ KV_EVENTS="{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*
 # PD reserves no memory for a vision tower, so it can give more to the KV cache.
 EFF_MEM_FRAC="$MEM_FRAC"
 [ "$ROLE" = "pd" ] && EFF_MEM_FRAC="$PD_MEM_FRAC"
+[ "$ROLE" = "encode" ] && EFF_MEM_FRAC="$ENC_MEM_FRAC"
 
 # Encoders are ALWAYS TP1 (the orchestrator places them on a single GPU). The
 # model's TP (e.g. 2 for 32B) applies only to agg/pd. Passing --tp 2 to an
@@ -117,23 +128,53 @@ COMMON_ARGS=(
   --mem-fraction-static "$EFF_MEM_FRAC"
   --discovery-backend etcd
   --event-plane nats
-  --log-level debug
+  --log-level "$LOG_LEVEL"
   --kv-events-config "$KV_EVENTS"
 )
+
+prefill_token_args() {
+  if [ -n "$MAX_PREFILL_TOKENS" ]; then
+    printf '%s\n' "--max-prefill-tokens" "$MAX_PREFILL_TOKENS"
+  fi
+}
+
+max_total_token_args() {
+  if [ -n "$MAX_TOTAL_TOKENS" ]; then
+    printf '%s\n' "--max-total-tokens" "$MAX_TOTAL_TOKENS"
+  fi
+}
+
+cuda_graph_args() {
+  if [ -n "$CUDA_GRAPH_MAX_BS" ]; then
+    printf '%s\n' "--cuda-graph-max-bs" "$CUDA_GRAPH_MAX_BS"
+  fi
+}
+
+sglang_tokenizer_args() {
+  if [ "$USE_SGLANG_TOKENIZER" = "1" ]; then
+    printf '%s\n' "--use-sglang-tokenizer"
+  fi
+}
 
 case "$ROLE" in
   agg)
     # Aggregated: full E+P+D in one process. No NIXL, keep in-process vision encode.
     echo "[add_worker] agg  gpus=$GPUS tp=$TP sys=$SYS_PORT -> $LOG"
+    # shellcheck disable=SC2086
     env "${COMMON_ENV[@]}" \
       python3 -m dynamo.sglang \
         "${COMMON_ARGS[@]}" \
         --enable-multimodal \
-        --chat-template qwen2-vl \
+        --chat-template "$CHAT_TEMPLATE" \
         --dtype auto \
         --kv-cache-dtype "$KV_DTYPE" \
         --max-running-requests "${MAX_RUNNING:-40}" \
         --chunked-prefill-size "$CHUNKED_PREFILL" \
+        $(prefill_token_args) \
+        $(max_total_token_args) \
+        $(cuda_graph_args) \
+        $(sglang_tokenizer_args) \
+        $AGG_EXTRA_ARGS \
       > "$LOG" 2>&1 &
     ;;
   pd)
@@ -143,9 +184,14 @@ case "$ROLE" in
     PD_ARGS=(--prefill-max-requests "$PD_PREFILL_MAX"
              --max-running-requests "$PD_MAX_RUNNING"
              --chunked-prefill-size "$CHUNKED_PREFILL")
+    [ -n "$MAX_PREFILL_TOKENS" ] && PD_ARGS+=(--max-prefill-tokens "$MAX_PREFILL_TOKENS")
+    [ -n "$MAX_TOTAL_TOKENS" ] && PD_ARGS+=(--max-total-tokens "$MAX_TOTAL_TOKENS")
+    [ -n "$CUDA_GRAPH_MAX_BS" ] && PD_ARGS+=(--cuda-graph-max-bs "$CUDA_GRAPH_MAX_BS")
+    [ "$USE_SGLANG_TOKENIZER" = "1" ] && PD_ARGS+=(--use-sglang-tokenizer)
     [ "$PD_RADIX" = "1" ] || PD_ARGS+=(--disable-radix-cache)
     echo "[add_worker] pd   gpus=$GPUS tp=$TP sys=$SYS_PORT side=$SIDE_PORT "\
 "mem_frac=$EFF_MEM_FRAC prefill_max=$PD_PREFILL_MAX max_running=$PD_MAX_RUNNING radix=$PD_RADIX -> $LOG"
+    # shellcheck disable=SC2086
     env "${COMMON_ENV[@]}" \
       VLLM_NIXL_SIDE_CHANNEL_HOST="$IP_LOCAL_ROCE" \
       VLLM_NIXL_SIDE_CHANNEL_PORT="$SIDE_PORT" \
@@ -159,6 +205,7 @@ case "$ROLE" in
         --embedding-transfer-mode "$TRANSFER_MODE" \
         --kv-cache-dtype "$KV_DTYPE" \
         "${PD_ARGS[@]}" \
+        $PD_EXTRA_ARGS \
         --skip-tokenizer-init \
         --disaggregation-transfer-backend nixl \
       > "$LOG" 2>&1 &
@@ -167,6 +214,7 @@ case "$ROLE" in
     # Encode-only worker on a local CUDA GPU; sends embeddings via NIXL (cuda_ipc).
     echo "[add_worker] enc  gpus=$GPUS tp=$TP sys=$SYS_PORT side=$SIDE_PORT "\
 "serialize=$VISION_ENCODE_SERIALIZE -> $LOG"
+    # shellcheck disable=SC2086
     env "${COMMON_ENV[@]}" \
       VLLM_NIXL_SIDE_CHANNEL_HOST="$IP_LOCAL_ROCE" \
       VLLM_NIXL_SIDE_CHANNEL_PORT="$SIDE_PORT" \
@@ -180,10 +228,12 @@ case "$ROLE" in
         --multimodal-encode-worker \
         --enable-multimodal \
         --encoder-only \
-        --chat-template qwen2-vl \
+        --chat-template "$CHAT_TEMPLATE" \
         --embedding-transfer-mode "$TRANSFER_MODE" \
+        $(sglang_tokenizer_args) \
         --skip-tokenizer-init \
         --disaggregation-transfer-backend nixl \
+        $ENC_EXTRA_ARGS \
       > "$LOG" 2>&1 &
     ;;
   *)

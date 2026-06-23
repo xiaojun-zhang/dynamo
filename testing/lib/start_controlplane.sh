@@ -15,6 +15,8 @@ export PORT_NATS="${PORT_NATS:-14222}"
 export PORT_ETCD="${PORT_ETCD:-12379}"
 export PORT_HTTP="${PORT_HTTP:-7001}"
 export PORT_ETCD_PEER="${PORT_ETCD_PEER:-12380}"
+export ROUTER_MODE="${ROUTER_MODE:-kv}"
+export DYN_CHAT_PROCESSOR="${DYN_CHAT_PROCESSOR:-}"
 LOG_DIR="${LOG_DIR:-$(pwd)/logs}"
 mkdir -p "$LOG_DIR"
 PIDFILE="$LOG_DIR/harness.pids"   # every proc we launch records its PID here
@@ -24,6 +26,8 @@ export no_proxy="0.0.0.0,127.0.0.1,localhost,${IP_LOCAL},192.165.123.0/24,172.26
 export NO_PROXY="$no_proxy"
 
 echo "[controlplane] NATS:$PORT_NATS etcd:$PORT_ETCD frontend:$PORT_HTTP"
+echo "[controlplane] router_mode:$ROUTER_MODE"
+[ -n "$DYN_CHAT_PROCESSOR" ] && echo "[controlplane] dyn_chat_processor:$DYN_CHAT_PROCESSOR"
 
 # Clean any prior control plane — PORT-SCOPED so we only touch OUR stack on this
 # shared host (never a blanket pkill of every nats/etcd/frontend).
@@ -60,6 +64,11 @@ for i in $(seq 1 10); do
     sleep 2
 done
 
+FRONTEND_EXTRA_ARGS=()
+if [ -n "$DYN_CHAT_PROCESSOR" ]; then
+    FRONTEND_EXTRA_ARGS+=(--dyn-chat-processor "$DYN_CHAT_PROCESSOR")
+fi
+
 echo "[controlplane] starting frontend..."
 # The FRONTEND is what buffers the inbound HTTP request body, so the body-size
 # limits must be set HERE -- not just on the workers (add_worker.sh). Without
@@ -77,8 +86,9 @@ DYN_LOG=debug \
 SGLANG_LOG_LEVEL=info \
 python3 -m dynamo.frontend \
     --http-port "$PORT_HTTP" \
-    --router-mode kv \
+    --router-mode "$ROUTER_MODE" \
     --router-reset-states \
+    "${FRONTEND_EXTRA_ARGS[@]}" \
     > "$LOG_DIR/frontend.log" 2>&1 &
 echo $! >> "$PIDFILE"
 sleep 5

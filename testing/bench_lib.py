@@ -58,7 +58,7 @@ GPU_HOSTS = {
         # sc09super21-h200: 8x H200 143 GB. mlx5_0 (enp25s0np0) is the ACTIVE
         # RoCE port carrying 192.165.123.48 on the shared .123/24 fabric.
         "match": ("h200",),
-        "mgmt_ip": "172.26.46.133",
+        "mgmt_ip": "172.26.46.130",
         "roce_ip": "192.165.123.48",
         "ucx_nic": "mlx5_0:1",
     },
@@ -139,6 +139,29 @@ MODELS = {
         # batch >1 request instead of splitting a single prompt across chunks.
         "path": f"{WEKA}/models--Qwen--Qwen3-VL-235B-A22B-Instruct-FP8",
         "tp": 4, "kv": "fp8_e4m3", "mem_frac": 0.90, "chunked": 32768},
+    f"{WEKA}/hub/models--OpenGVLab--InternVL3_5-38B/snapshots/main": {
+        # Native SGLang validation used the local snapshot path as the served
+        # model name so bench_serving does not pull incompatible hub processor
+        # metadata. TP1 fits on one H200 with a bounded FP8 KV pool.
+        "path": f"{WEKA}/hub/models--OpenGVLab--InternVL3_5-38B/snapshots/main",
+        "tp": 1,
+        "kv": "fp8_e4m3",
+        "mem_frac": 0.80,
+        "chunked": 65536,
+        "chat_template": "internvl-2-5",
+        "max_prefill_tokens": 65536,
+        "max_total_tokens": 250000,
+        "cuda_graph_max_bs": 32,
+        "max_running": 32,
+        "pd_prefill_max": 4,
+        "pd_max_running": 32,
+        "pd_mem_frac": 0.80,
+        "enc_mem_frac": 0.70,
+        "xpu_apply_patches": 1,
+        "use_sglang_tokenizer": 0,
+        "dyn_chat_processor": "sglang",
+        "router_mode": "round-robin",
+    },
 }
 
 
@@ -356,7 +379,8 @@ RESULT_HDR = re.compile(r"=+ Serving Benchmark Result")
 
 
 def run_bench(served, num_prompts, image_count, image_res, rate,
-              out_json, label, output_len=256, input_len=128, timeout_s=2400):
+              out_json, label, output_len=256, input_len=128,
+              max_concurrency=None, timeout_s=None):
     """Run sglang.bench_serving; return (ok, result_text_block).
     result_text_block is the captured '==== Serving Benchmark Result ===='
     section (with the label injected), or '' if not found.
@@ -366,6 +390,8 @@ def run_bench(served, num_prompts, image_count, image_res, rate,
     output). For E/PD disagg the dominant benefit is queue reduction once the
     aggregated baseline saturates -- not output length per se (the reference
     workloads win at output_len=256)."""
+    if timeout_s is None:
+        timeout_s = int(os.environ.get("BENCH_TIMEOUT", "2400"))
     cmd = [
         "python3", "-m", "sglang.bench_serving",
         "--model", served, "--backend", "sglang-oai-chat",
@@ -381,9 +407,19 @@ def run_bench(served, num_prompts, image_count, image_res, rate,
         "--disable-tqdm",   # no CR progress bars: keeps captured logs clean
         "--output-file", out_json,
     ]
+    if max_concurrency:
+        cmd += ["--max-concurrency", str(max_concurrency)]
+    bench_env = None
+    bench_pythonpath = os.environ.get("BENCH_PYTHONPATH", "")
+    if bench_pythonpath:
+        bench_env = dict(os.environ)
+        bench_env["PYTHONPATH"] = (
+            bench_pythonpath
+            + (":" + bench_env["PYTHONPATH"] if bench_env.get("PYTHONPATH") else "")
+        )
     log(f"  bench: np={num_prompts} img={image_count} res={image_res} rate={rate}")
     try:
-        cp = sh(cmd, timeout=timeout_s)
+        cp = sh(cmd, env=bench_env, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         log(f"  bench TIMEOUT after {timeout_s}s")
         return False, ""
