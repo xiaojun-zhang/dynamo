@@ -162,6 +162,50 @@ MODELS = {
         "dyn_chat_processor": "sglang",
         "router_mode": "round-robin",
     },
+    f"{WEKA}/hub/models--OpenGVLab--InternVL3_5-30B-A3B/snapshots/main": {
+        # BF16 checkpoint is ~57.5 GiB. TP1 leaves enough headroom on one H200
+        # for the InternVL vision path, KV pool, and 8-image 1080p prefill.
+        "path": f"{WEKA}/hub/models--OpenGVLab--InternVL3_5-30B-A3B/snapshots/main",
+        "tp": 1,
+        "kv": "fp8_e4m3",
+        "mem_frac": 0.80,
+        "chunked": 65536,
+        "chat_template": "internvl-2-5",
+        "max_prefill_tokens": 65536,
+        "max_total_tokens": 250000,
+        "cuda_graph_max_bs": 32,
+        "max_running": 32,
+        "pd_prefill_max": 4,
+        "pd_max_running": 32,
+        "pd_mem_frac": 0.80,
+        "enc_mem_frac": 0.70,
+        "xpu_apply_patches": 1,
+        "use_sglang_tokenizer": 0,
+        "dyn_chat_processor": "sglang",
+        "router_mode": "round-robin",
+    },
+    f"{WEKA}/hub/models--OpenGVLab--InternVL3_5-241B-A28B/snapshots/main": {
+        # BF16 checkpoint is ~448 GiB. Upstream recommends TP8, but this entry
+        # intentionally uses TP4 to match the requested 4x H200 cost point.
+        "path": f"{WEKA}/hub/models--OpenGVLab--InternVL3_5-241B-A28B/snapshots/main",
+        "tp": 4,
+        "kv": "fp8_e4m3",
+        "mem_frac": 0.90,
+        "chunked": 32768,
+        "chat_template": "internvl-2-5",
+        "max_prefill_tokens": 32768,
+        "max_total_tokens": 250000,
+        "cuda_graph_max_bs": 32,
+        "max_running": 16,
+        "pd_prefill_max": 2,
+        "pd_max_running": 16,
+        "pd_mem_frac": 0.90,
+        "enc_mem_frac": 0.70,
+        "xpu_apply_patches": 1,
+        "use_sglang_tokenizer": 0,
+        "dyn_chat_processor": "sglang",
+        "router_mode": "round-robin",
+    },
 }
 
 
@@ -276,9 +320,11 @@ def _xpu_used_mib(idx):
     return max(nums) if nums else None
 
 
-def idle_xpus(candidates, max_used_mib=1000):
+def idle_xpus(candidates, max_used_mib=None):
     """Subset of candidate XPU indices that are idle on the remote B70.
     Unreadable / busy -> EXCLUDED (never run on an unverifiable device)."""
+    if max_used_mib is None:
+        max_used_mib = int(os.environ.get("XPU_IDLE_MAX_USED_MIB", "1000"))
     free = []
     for x in candidates:
         used = _xpu_used_mib(x)

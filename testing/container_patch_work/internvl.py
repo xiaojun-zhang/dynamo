@@ -766,11 +766,16 @@ class InternVLChatModel(nn.Module):
                 ("gate_up_proj", "up_proj", 1),
             ]
 
+            num_experts = getattr(
+                self.config,
+                "num_experts",
+                getattr(self.config.llm_config, "num_experts", None),
+            )
             expert_params_mapping = FusedMoE.make_expert_params_mapping(
                 ckpt_gate_proj_name="gate_proj",
                 ckpt_down_proj_name="down_proj",
                 ckpt_up_proj_name="up_proj",
-                num_experts=self.config.num_experts,
+                num_experts=num_experts,
             )
         elif "Qwen3ForCausalLM" in self.config.llm_config.architectures:
             stacked_params_mapping = [

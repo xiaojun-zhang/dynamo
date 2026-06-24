@@ -75,8 +75,10 @@ def main():
     # ---- env shared by the shell pieces ----
     env = dict(os.environ)
     env.update({
-        "MODEL_PATH": info["path"], "TP": str(tp),
-        "KV_DTYPE": info["kv"], "MEM_FRAC": str(info["mem_frac"]),
+        "MODEL_PATH": os.environ.get("MODEL_PATH", info["path"]),
+        "TP": str(tp),
+        "KV_DTYPE": os.environ.get("KV_DTYPE", info["kv"]),
+        "MEM_FRAC": os.environ.get("MEM_FRAC", str(info["mem_frac"])),
         "LOG_DIR": os.path.join(args.out_dir, "logs"),
         "IP_LOCAL": host["mgmt_ip"],
         "IP_LOCAL_ROCE": host["roce_ip"],
@@ -88,7 +90,7 @@ def main():
     })
     # Optional per-model prefill chunk size (bounds prefill activation peak so big
     # multimodal prompts don't OOM the LLM MLP). Absent -> add_worker.sh default.
-    if info.get("chunked"):
+    if info.get("chunked") and not os.environ.get("CHUNKED_PREFILL"):
         env["CHUNKED_PREFILL"] = str(info["chunked"])
     for key, env_name in (
         ("chat_template", "CHAT_TEMPLATE"),
@@ -106,6 +108,8 @@ def main():
         ("router_mode", "ROUTER_MODE"),
     ):
         if info.get(key) is not None:
+            if os.environ.get(env_name):
+                continue
             env[env_name] = str(info[key])
     if args.mm_attn_backend:
         env["MM_ATTN_BACKEND"] = args.mm_attn_backend
@@ -160,8 +164,9 @@ def main():
         _teardown(env, gpu_cands)
         _start_controlplane(env)
         _launch_local(env, plan, args.model)
-        if xpu_plan:
-            _launch_xpu(env, xpu_plan, args.model)
+        if xpu_plan and not _launch_xpu(env, xpu_plan, args.model):
+            _teardown(env, gpu_cands)
+            return 2
 
         # disagg (epd_*) routes through the encode worker, which rejects
         # text-only input — the smoke request must carry an image there.
@@ -224,7 +229,25 @@ def _launch_xpu(env, xpus, served):
     # the GPU container's /robin mount. Hand it the host path for the logs dir so
     # encoder logs land alongside the GPU worker logs in this test's logs/.
     e["XPU_LOG_DIR"] = B.host_path(env["LOG_DIR"])
-    B.sh(["bash", os.path.join(LIB, "add_encoder_xpu.sh"), _csv(xpus), served], env=e)
+    cp = B.sh(["bash", os.path.join(LIB, "add_encoder_xpu.sh"), _csv(xpus), served], env=e)
+    launcher_log = os.path.join(env["LOG_DIR"], "xpu_launcher.log")
+    with open(launcher_log, "a") as f:
+        f.write(f"$ add_encoder_xpu.sh {_csv(xpus)} {served}\n")
+        f.write(f"returncode={cp.returncode}\n")
+        if cp.stdout:
+            f.write("stdout:\n")
+            f.write(cp.stdout)
+            if not cp.stdout.endswith("\n"):
+                f.write("\n")
+        if cp.stderr:
+            f.write("stderr:\n")
+            f.write(cp.stderr)
+            if not cp.stderr.endswith("\n"):
+                f.write("\n")
+    if cp.returncode != 0:
+        B.log(f"  XPU launcher failed rc={cp.returncode}; see {launcher_log}")
+        return False
+    return True
 
 
 def _teardown(env, gpu_cands):
