@@ -204,7 +204,9 @@ def _start_controlplane(env):
 
 def _launch_local(env, plan, served):
     # port plan: sys/kv/side bases, offset by a per-worker index
-    sys_base, kv_base, side_base = 8100, 22100, 20100
+    sys_base = int(env.get("SYS_PORT_BASE", "8100"))
+    kv_base = int(env.get("KV_EVENT_BASE", "22100"))
+    side_base = int(env.get("SIDE_CHANNEL_BASE", "20100"))
     for i, (role, gpus) in enumerate(plan):
         B.sh(["bash", os.path.join(LIB, "add_worker.sh"),
               role, _csv(gpus),
@@ -215,9 +217,9 @@ def _launch_local(env, plan, served):
 
 def _launch_xpu(env, xpus, served):
     e = dict(env)
-    e["SYS_PORT_BASE"] = "8091"
-    e["KV_EVENT_BASE"] = "22090"
-    e["SIDE_CHANNEL_BASE"] = "20099"
+    e["SYS_PORT_BASE"] = env.get("XPU_SYS_PORT_BASE", "8091")
+    e["KV_EVENT_BASE"] = env.get("XPU_KV_EVENT_BASE", "22090")
+    e["SIDE_CHANNEL_BASE"] = env.get("XPU_SIDE_CHANNEL_BASE", "20099")
     # The B70 encoder container sees the shared NFS at its real /home path, not
     # the GPU container's /robin mount. Hand it the host path for the logs dir so
     # encoder logs land alongside the GPU worker logs in this test's logs/.

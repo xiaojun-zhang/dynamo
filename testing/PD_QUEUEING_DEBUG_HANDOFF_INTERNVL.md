@@ -1049,3 +1049,160 @@ endpoint set changes during routing, or B60 per-card service-time variance.
 
 Post-run process check found no stale `run_matrix`, `orchestrator`,
 `bench_serving`, `dynamo.sglang`, or `dynamo.frontend` processes.
+
+### 2026-06-24 01:34 PDT - B70 card 1 capped 1E1PD comparison
+
+User asked to run the B60 XPU comparison on B70 host
+`sc09giga01-b70.sc.intel.com` using B70 card `1`, with H200 GPU `6` as the PD
+worker. The workload matched the current capped B60 comparison shape:
+InternVL3.5-38B, 32 prompts, 4x 1080p images, rate 1.0, input 128, output 16,
+and `--max-concurrency 8`.
+
+The first attempt used the default harness ports and failed readiness before any
+benchmarking:
+
+```text
+PD on H200: ZMQ KV events bind failed on tcp://*:22100, address already in use.
+B70 encoder: DYN_SYSTEM_PORT 8091 was already in use on the B70 host.
+```
+
+Do not kill those unrelated listeners on the shared hosts. The harness was
+updated so local worker and XPU encoder port bases can be overridden by env:
+
+```text
+SYS_PORT_BASE / KV_EVENT_BASE / SIDE_CHANNEL_BASE
+XPU_SYS_PORT_BASE / XPU_KV_EVENT_BASE / XPU_SIDE_CHANNEL_BASE
+```
+
+Successful rerun command:
+
+```bash
+docker exec -w /robin/dynamo/testing \
+  -e XPU_HOST=sc09giga01-b70.sc.intel.com -e XPU_HOST_PROFILE=b70 \
+  -e XPU_CONTAINER=harness_b70_enc -e PORT_HTTP=7011 \
+  -e SYS_PORT_BASE=8110 -e KV_EVENT_BASE=23100 -e SIDE_CHANNEL_BASE=21100 \
+  -e XPU_SYS_PORT_BASE=8191 -e XPU_KV_EVENT_BASE=23090 -e XPU_SIDE_CHANNEL_BASE=21099 \
+  -e READY_TIMEOUT=1800 -e BENCH_TIMEOUT=900 \
+  -e BENCH_PYTHONPATH=/robin/dynamo/testing/bench_patches \
+  robin_sglang_dynamo_l40 \
+  python3 run_matrix.py \
+    --model /mnt/weka/data/llm-d-models-pv/hub/models--OpenGVLab--InternVL3_5-38B/snapshots/main \
+    --gpus 6 --xpus 1 --rates 1.0 \
+    --num-prompts 32 --image-count 4 --image-resolution 1080p \
+    --input-len 128 --output-len 16 \
+    --max-concurrency 8 \
+    --case3-epd-xpu 'E=1;PD=1' \
+    --results-root results/dynamo_internvl35_38b_b70_card1_r1_mc8
+```
+
+Result root:
+
+```text
+results/dynamo_internvl35_38b_b70_card1_r1_mc8/20260624_013451__mnt_weka_data_llm-d-models-pv_hub_models--OpenGVLab--InternVL3_5-38B_snapshots_main
+```
+
+Result:
+
+```text
+1E1PD B70 card1 mc8: 32/32, duration 183.21s, throughput 0.17 req/s,
+                     mean TTFT 37900.64ms, mean E2E 42205.43ms
+```
+
+Encoder timing from `encode_xpu_1.log`:
+
+```text
+B70 card1 mc8 all routed requests: n=34, mean 39.89s, median 39.47s, p90 45.06s, max 78.93s
+B70 card1 mc8 benchmark-ish requests: n=33, mean 40.89s, median 39.48s, p90 45.06s, max 78.93s
+```
+
+For context, the only completed B60 `1E1PD` result in the handoff is the earlier
+uncapped run, so it is not an exact apples-to-apples client-pressure comparison:
+
+```text
+B60 card0 uncapped 1E1PD: duration 241.63s, throughput 0.13 req/s,
+                          mean TTFT 192526.62ms, mean E2E 219374.53ms
+B60 card0 uncapped encoder timing: n=34, mean 206.68s, median 217.41s,
+                                   p90 232.82s, max 239.57s
+```
+
+Interpretation: with the capped workload, B70 card 1 is clearly usable and much
+faster than the old uncapped B60 1E1PD observation, but this does not isolate
+hardware alone because `--max-concurrency 8` also reduces queue pressure. The
+clean next comparison, if needed, is either B60 `1E1PD` with `--max-concurrency
+8` or B70 `1E1PD` without the cap.
+
+Post-run checks found no remaining harness processes on the H200 container and
+no `harness_b70_enc` container on the B70 host. B70 card 1 returned to about
+`211 MiB` used.
+
+### 2026-06-24 01:44 PDT - B60 card 0 capped 1E1PD comparison
+
+User asked to run the matching B60 `1E1PD` test with `--max-concurrency 8`,
+using any idle B60 XPU. B60 cards `0,1,2,3` were all idle at about `226-227
+MiB` used, so card `0` was selected to compare directly against the earlier
+uncapped B60 card 0 result. H200 GPU `6` was used as PD to match the B70
+comparison.
+
+Successful command:
+
+```bash
+docker exec -w /robin/dynamo/testing \
+  -e XPU_HOST=172.26.46.171 -e XPU_HOST_PROFILE=b60 \
+  -e XPU_CONTAINER=harness_b60_enc -e PORT_HTTP=7011 \
+  -e SYS_PORT_BASE=8110 -e KV_EVENT_BASE=23100 -e SIDE_CHANNEL_BASE=21100 \
+  -e XPU_SYS_PORT_BASE=8191 -e XPU_KV_EVENT_BASE=23090 -e XPU_SIDE_CHANNEL_BASE=21099 \
+  -e READY_TIMEOUT=1800 -e BENCH_TIMEOUT=900 \
+  -e BENCH_PYTHONPATH=/robin/dynamo/testing/bench_patches \
+  robin_sglang_dynamo_l40 \
+  python3 run_matrix.py \
+    --model /mnt/weka/data/llm-d-models-pv/hub/models--OpenGVLab--InternVL3_5-38B/snapshots/main \
+    --gpus 6 --xpus 0 --rates 1.0 \
+    --num-prompts 32 --image-count 4 --image-resolution 1080p \
+    --input-len 128 --output-len 16 \
+    --max-concurrency 8 \
+    --case3-epd-xpu 'E=1;PD=1' \
+    --results-root results/dynamo_internvl35_38b_b60_card0_r1_mc8
+```
+
+Result root:
+
+```text
+results/dynamo_internvl35_38b_b60_card0_r1_mc8/20260624_014402__mnt_weka_data_llm-d-models-pv_hub_models--OpenGVLab--InternVL3_5-38B_snapshots_main
+```
+
+Result:
+
+```text
+1E1PD B60 card0 mc8: 32/32, duration 239.71s, throughput 0.13 req/s,
+                     mean TTFT 50851.38ms, mean E2E 55757.36ms
+```
+
+Encoder timing from `encode_xpu_0.log`:
+
+```text
+B60 card0 mc8 all routed requests: n=34, mean 52.59s, median 51.78s, p90 59.07s, max 103.60s
+B60 card0 mc8 benchmark-ish requests: n=33, mean 54.03s, median 51.82s, p90 59.07s, max 103.60s
+```
+
+Clean capped B60/B70 comparison:
+
+```text
+B60 card0 1E1PD mc8: duration 239.71s, throughput 0.13 req/s,
+                     mean TTFT 50.85s, mean E2E 55.76s,
+                     encoder mean 54.03s, median 51.82s, p90 59.07s
+
+B70 card1 1E1PD mc8: duration 183.21s, throughput 0.17 req/s,
+                     mean TTFT 37.90s, mean E2E 42.21s,
+                     encoder mean 40.89s, median 39.48s, p90 45.06s
+```
+
+Interpretation: B70 card 1 is materially faster under the same capped workload.
+Compared with B60 card 0, B70 reduced benchmark duration by about `24%`, mean
+TTFT by about `25%`, mean E2E by about `24%`, and benchmark encoder mean wall
+time by about `24%`. That is a real B70 improvement, but single-XPU E/PD still
+does not beat the capped `1AGG` B60/H200 baseline from the same workload
+(`1AGG mc8`: duration `69.33s`, throughput `0.46 req/s`, mean TTFT `10.57s`).
+
+Post-run checks found no remaining harness processes on the H200 container and
+no `harness_b60_enc` container on the B60 host. B60 card 0 returned to about
+`227 MiB` used.
