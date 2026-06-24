@@ -21,6 +21,9 @@ transfer, or an InternVL/XPU compatibility issue.
 - B60 XPU host used for recent tests: `172.26.46.171`
 - B60 encoder container name: `harness_b60_enc`
 - B60 XPU cards available for encoders: `0,1,2,3`
+- B70 XPU host used for recent successful tests: `sc09giga01-b70.sc.intel.com`
+- B70 known-compatible encoder image: `hm_dynamo_b70_pr26460:latest`
+- B70 encoder container name: `harness_b70_enc`
 - SSH to XPU host from inside GPU container commonly uses:
   `ssh -F /dev/null -i /root/.ssh/id_ed25519 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no h-zheng@172.26.46.171 ...`
 
@@ -1206,3 +1209,386 @@ does not beat the capped `1AGG` B60/H200 baseline from the same workload
 Post-run checks found no remaining harness processes on the H200 container and
 no `harness_b60_enc` container on the B60 host. B60 card 0 returned to about
 `227 MiB` used.
+
+### 2026-06-24 01:58 PDT - B70 card 1 1E1PD with latest sgl-kernel-xpu
+
+User asked to retest the B70 card 1 `1E1PD` run with the latest
+`https://github.com/sgl-project/sgl-kernel-xpu`, changing only the XPU kernel
+package. The run used the same workload, ports, B70 card `1`, and H200 GPU `6`
+as the previous capped B70 comparison.
+
+An opt-in launcher hook was added to `lib/add_encoder_xpu.sh`:
+
+```text
+XPU_INSTALL_SGL_KERNEL_XPU=1
+XPU_SGL_KERNEL_XPU_REPO=https://github.com/sgl-project/sgl-kernel-xpu
+```
+
+When enabled, the fresh XPU harness container clones the repo in `/tmp`,
+uninstalls `sgl_kernel`, installs the cloned package with `python3 -m pip
+install .`, and only then launches the encoder. Because the B70 container is
+run with `--rm`, no persistent revert was needed after the test. The current
+repo HEAD queried after the run was `a696461ad3f9ada1b8e8a4e3422b285063b0d53b`;
+the install command itself did not persist the cloned commit into the run logs.
+
+Command:
+
+```bash
+docker exec -w /robin/dynamo/testing \
+  -e XPU_HOST=sc09giga01-b70.sc.intel.com -e XPU_HOST_PROFILE=b70 \
+  -e XPU_CONTAINER=harness_b70_enc -e XPU_INSTALL_SGL_KERNEL_XPU=1 \
+  -e PORT_HTTP=7011 \
+  -e SYS_PORT_BASE=8110 -e KV_EVENT_BASE=23100 -e SIDE_CHANNEL_BASE=21100 \
+  -e XPU_SYS_PORT_BASE=8191 -e XPU_KV_EVENT_BASE=23090 -e XPU_SIDE_CHANNEL_BASE=21099 \
+  -e READY_TIMEOUT=1800 -e BENCH_TIMEOUT=900 \
+  -e BENCH_PYTHONPATH=/robin/dynamo/testing/bench_patches \
+  robin_sglang_dynamo_l40 \
+  python3 run_matrix.py \
+    --model /mnt/weka/data/llm-d-models-pv/hub/models--OpenGVLab--InternVL3_5-38B/snapshots/main \
+    --gpus 6 --xpus 1 --rates 1.0 \
+    --num-prompts 32 --image-count 4 --image-resolution 1080p \
+    --input-len 128 --output-len 16 \
+    --max-concurrency 8 \
+    --case3-epd-xpu 'E=1;PD=1' \
+    --results-root results/dynamo_internvl35_38b_b70_card1_r1_mc8_sglkernelxpu_latest
+```
+
+Result root:
+
+```text
+results/dynamo_internvl35_38b_b70_card1_r1_mc8_sglkernelxpu_latest/20260624_015847__mnt_weka_data_llm-d-models-pv_hub_models--OpenGVLab--InternVL3_5-38B_snapshots_main
+```
+
+Result:
+
+```text
+1E1PD B70 card1 latest-kernel mc8: 32/32, duration 196.49s, throughput 0.16 req/s,
+                                   mean TTFT 41330.51ms, mean E2E 45389.62ms
+```
+
+Encoder timing from `encode_xpu_1.log`:
+
+```text
+B70 card1 latest-kernel mc8 all routed requests: n=34, mean 42.96s, median 42.56s, p90 48.28s, max 85.00s
+B70 card1 latest-kernel mc8 benchmark-ish requests: n=33, mean 43.99s, median 42.59s, p90 48.28s, max 85.00s
+```
+
+Direct comparison against the previous B70 card 1 old-kernel capped run:
+
+```text
+Old kernel:    duration 183.21s, throughput 0.17 req/s,
+               mean TTFT 37.90s, mean E2E 42.21s,
+               encoder mean 40.89s, median 39.48s, p90 45.06s, max 78.93s
+
+Latest kernel: duration 196.49s, throughput 0.16 req/s,
+               mean TTFT 41.33s, mean E2E 45.39s,
+               encoder mean 43.99s, median 42.59s, p90 48.28s, max 85.00s
+```
+
+Interpretation: the latest `sgl-kernel-xpu` installed and the encoder launched
+successfully, but this run did not improve the full capped `1E1PD` benchmark.
+It was slightly worse than the old-kernel B70 run: duration +7.2%, mean TTFT
++9.0%, mean E2E +7.5%, and benchmark encoder mean +7.6%. The first isolated
+encoder requests were still about 8s, but under `--max-concurrency 8` the same
+single-encoder queueing shape remained, with most benchmark encoder wall times
+around 42-48s and two long requests at about 84-85s.
+
+Post-run checks found no remaining harness processes on the H200 container and
+no `harness_b70_enc` container on the B70 host. B70 card 1 returned to about
+`211 MiB` used.
+
+### 2026-06-24 02:16 PDT - B70 cards 0,1,7 old-kernel 3E1PD
+
+User asked to run the same B70 baseline configuration as the old-kernel
+`1E1PD` test, but with `3E1PD` using B70 encoder cards `0,1,7`. H200 GPU `6`
+was again used as the PD worker. The launcher explicitly set
+`XPU_INSTALL_SGL_KERNEL_XPU=0`, so the fresh B70 encoder container used the
+image's existing old `sgl_kernel` package.
+
+Command:
+
+```bash
+docker exec -w /robin/dynamo/testing \
+  -e XPU_HOST=sc09giga01-b70.sc.intel.com -e XPU_HOST_PROFILE=b70 \
+  -e XPU_CONTAINER=harness_b70_enc -e XPU_INSTALL_SGL_KERNEL_XPU=0 \
+  -e PORT_HTTP=7011 \
+  -e SYS_PORT_BASE=8110 -e KV_EVENT_BASE=23100 -e SIDE_CHANNEL_BASE=21100 \
+  -e XPU_SYS_PORT_BASE=8191 -e XPU_KV_EVENT_BASE=23090 -e XPU_SIDE_CHANNEL_BASE=21099 \
+  -e READY_TIMEOUT=1800 -e BENCH_TIMEOUT=900 \
+  -e BENCH_PYTHONPATH=/robin/dynamo/testing/bench_patches \
+  robin_sglang_dynamo_l40 \
+  python3 run_matrix.py \
+    --model /mnt/weka/data/llm-d-models-pv/hub/models--OpenGVLab--InternVL3_5-38B/snapshots/main \
+    --gpus 6 --xpus 0,1,7 --rates 1.0 \
+    --num-prompts 32 --image-count 4 --image-resolution 1080p \
+    --input-len 128 --output-len 16 \
+    --max-concurrency 8 \
+    --case3-epd-xpu 'E=3;PD=1' \
+    --results-root results/dynamo_internvl35_38b_b70_cards017_r1_mc8_3e1pd_oldkernel
+```
+
+Result root:
+
+```text
+results/dynamo_internvl35_38b_b70_cards017_r1_mc8_3e1pd_oldkernel/20260624_021650__mnt_weka_data_llm-d-models-pv_hub_models--OpenGVLab--InternVL3_5-38B_snapshots_main
+```
+
+Result:
+
+```text
+3E1PD B70 cards 0,1,7 old-kernel mc8: 32/32, duration 91.23s, throughput 0.35 req/s,
+                                       mean TTFT 18783.24ms, mean E2E 20580.02ms
+```
+
+Encoder timing from `encode_xpu_*.log`:
+
+```text
+Bench requests only:
+xpu0: n=12, mean 23.19s, median 24.31s, p90 32.68s, max 32.75s
+xpu1: n= 8, mean 12.61s, median 12.01s, p90 16.84s, max 17.43s
+xpu7: n=13, mean 21.46s, median 25.32s, p90 27.72s, max 29.90s
+
+Total benchmark encoder timing: n=33, mean 19.94s, median 17.43s, p90 30.92s, max 32.75s
+```
+
+Direct comparison against the B70 card 1 old-kernel `1E1PD` baseline:
+
+```text
+1E1PD old kernel: duration 183.21s, throughput 0.17 req/s,
+                  mean TTFT 37.90s, mean E2E 42.21s,
+                  encoder mean 40.89s, median 39.48s, p90 45.06s, max 78.93s
+
+3E1PD old kernel: duration  91.23s, throughput 0.35 req/s,
+                  mean TTFT 18.78s, mean E2E 20.58s,
+                  encoder mean 19.94s, median 17.43s, p90 30.92s, max 32.75s
+```
+
+Interpretation: scaling from one B70 encoder to three B70 encoders roughly
+halved the capped workload latency and doubled throughput. Versus the `1E1PD`
+old-kernel B70 baseline, `3E1PD` reduced duration by about `50%`, mean TTFT by
+about `50%`, mean E2E by about `51%`, and benchmark encoder mean by about
+`51%`. Routing was not perfectly even (`12/8/13` benchmark requests on
+`xpu0/xpu1/xpu7`), but it was distributed enough to substantially reduce
+queueing. `xpu1` was visibly faster than `xpu0` and `xpu7` in this run.
+
+Post-run checks found no remaining harness processes on the H200 container and
+no `harness_b70_enc` container on the B70 host.
+
+### 2026-06-24 02:24-02:35 PDT - H200 SGLang+Dynamo baselines for B70 comparison
+
+User asked for H200-only SGLang + Dynamo runs, not native SGLang, to compare
+against the B70 encoder cases. These used the same workload shape as the B70
+runs unless noted:
+
+```text
+--num-prompts 32
+--image-count 4
+--image-resolution 1080p
+--input-len 128
+--output-len 16
+--rates 1.0
+--max-concurrency 8
+--backend sglang-oai-chat
+--dataset-name image
+--apply-chat-template
+--seed 0
+```
+
+H200 `1AGG` on GPU `6`:
+
+```text
+results/dynamo_internvl35_38b_h200_gpu6_r1_mc8_1agg_compare_3e1pd/20260624_022422__mnt_weka_data_llm-d-models-pv_hub_models--OpenGVLab--InternVL3_5-38B_snapshots_main
+
+1AGG H200 GPU6: 32/32, duration 68.59s, throughput 0.47 req/s,
+                mean TTFT 10365.61ms, mean E2E 14164.24ms
+```
+
+H200 SGLang + Dynamo `3E1PD`, with PD on GPU `0` and encoders on GPUs
+`1,2,3`:
+
+```text
+results/dynamo_internvl35_38b_h200_gpus123_e_gpu0_pd_r1_mc8_3e1pd_patched/20260624_023506__mnt_weka_data_llm-d-models-pv_hub_models--OpenGVLab--InternVL3_5-38B_snapshots_main
+
+3E1PD H200 E/PD: 32/32, duration 49.39s, throughput 0.65 req/s,
+                 mean TTFT 5567.98ms, mean E2E 8099.67ms
+```
+
+The H200 GPU encoder run initially hit:
+
+```text
+Cannot infer merge factor: grid token total is not divisible by embedding token total
+```
+
+It was fixed in the running GPU container by applying the same encode worker
+patch to the container's `/opt/venv/lib/python3.12/site-packages` path:
+
+```bash
+sed 's#/usr/local/lib/python3.12/dist-packages#/opt/venv/lib/python3.12/site-packages#g' \
+  container_patch_work/patch_dynamo_encode_worker_xpu.py | \
+  docker exec -i robin_sglang_dynamo_l40 python3 -
+docker exec robin_sglang_dynamo_l40 python3 -m py_compile \
+  /opt/venv/lib/python3.12/site-packages/dynamo/sglang/request_handlers/multimodal/encode_worker_handler.py
+```
+
+Encoder timing for H200 `3E1PD` from `worker_encode_gpu*.log`, all routed
+requests including smoke:
+
+```text
+gpu1: n=16, mean 7.38s, median 6.64s, p90 11.86s, max 12.78s
+gpu2: n= 7, mean 7.05s, median 5.09s, p90 11.54s, max 11.57s
+gpu3: n=11, mean 8.34s, median 8.16s, p90 11.26s, max 12.72s
+total: n=34, mean 7.62s, median 7.64s, p90 11.56s, max 12.78s
+```
+
+Comparison:
+
+```text
+H200 1AGG:       duration 68.59s, throughput 0.47 req/s,
+                 mean TTFT 10.37s, mean E2E 14.16s
+
+H200 3E1PD:      duration 49.39s, throughput 0.65 req/s,
+                 mean TTFT  5.57s, mean E2E  8.10s,
+                 encoder mean 7.62s, p90 11.56s
+```
+
+Interpretation: SGLang + Dynamo can reproduce the H200-only E/PD advantage
+for this 38B workload. Relative to H200 `1AGG`, H200 `3E1PD` improves request
+throughput by about `38%`, reduces duration by about `28%`, reduces mean TTFT
+by about `46%`, and reduces mean E2E by about `43%`. This makes the B70/XPU
+question primarily about encoder compute/queueing, not Dynamo E/PD mechanics.
+
+### 2026-06-24 03:20 PDT - B70 cards 2-7 old-kernel 4E1PD and 6E1PD
+
+User asked to run `4E1PD` and `6E1PD` with PD on H200 and encoders on B70
+server `sc09giga01-b70.sc.intel.com`, using XPU cards `2,3,4,5,6,7`, testing
+`image-count=4` first. H200 GPU `6` was idle and used as the PD worker. The
+B70 server had the compatible image `hm_dynamo_b70_pr26460:latest`; the run
+explicitly used the old kernel path with `XPU_INSTALL_SGL_KERNEL_XPU=0`.
+
+Command:
+
+```bash
+docker exec -w /robin/dynamo/testing \
+  -e XPU_HOST=sc09giga01-b70.sc.intel.com -e XPU_HOST_PROFILE=b70 \
+  -e XPU_CONTAINER=harness_b70_enc -e XPU_INSTALL_SGL_KERNEL_XPU=0 \
+  -e PORT_HTTP=7041 \
+  -e SYS_PORT_BASE=8140 -e KV_EVENT_BASE=23400 -e SIDE_CHANNEL_BASE=21400 \
+  -e XPU_SYS_PORT_BASE=8241 -e XPU_KV_EVENT_BASE=23490 -e XPU_SIDE_CHANNEL_BASE=21499 \
+  -e READY_TIMEOUT=1800 -e BENCH_TIMEOUT=1200 \
+  -e BENCH_PYTHONPATH=/robin/dynamo/testing/bench_patches \
+  robin_sglang_dynamo_l40 \
+  python3 run_matrix.py \
+    --model /mnt/weka/data/llm-d-models-pv/hub/models--OpenGVLab--InternVL3_5-38B/snapshots/main \
+    --gpus 6 --xpus 2,3,4,5,6,7 --rates 1.0 \
+    --num-prompts 32 --image-count 4 --image-resolution 1080p \
+    --input-len 128 --output-len 16 \
+    --max-concurrency 8 \
+    --case3-epd-xpu 'E=4,6;PD=1' \
+    --results-root results/dynamo_internvl35_38b_b70_giga01_cards234567_r1_mc8_img4_4e6e1pd_oldkernel
+```
+
+Result root:
+
+```text
+results/dynamo_internvl35_38b_b70_giga01_cards234567_r1_mc8_img4_4e6e1pd_oldkernel/20260624_032016__mnt_weka_data_llm-d-models-pv_hub_models--OpenGVLab--InternVL3_5-38B_snapshots_main
+```
+
+Results:
+
+```text
+4E1PD B70 cards 2,3,4,5 old-kernel mc8:
+  32/32, duration 71.39s, throughput 0.45 req/s,
+  mean TTFT 13720.05ms, mean E2E 15264.38ms
+
+6E1PD B70 cards 2,3,4,5,6,7 old-kernel mc8:
+  32/32, duration 61.45s, throughput 0.52 req/s,
+  mean TTFT 11857.86ms, mean E2E 13439.73ms
+```
+
+Encoder timing from `encode_xpu_*.log`, all routed requests including smoke:
+
+```text
+4E1PD:
+xpu2: n=10, mean 14.79s, median 14.12s, p90 20.66s, max 22.43s
+xpu3: n=10, mean 16.65s, median 16.29s, p90 24.57s, max 26.55s
+xpu4: n= 7, mean 13.97s, median 13.41s, p90 18.10s, max 18.22s
+xpu5: n= 7, mean 12.68s, median 10.98s, p90 19.12s, max 21.50s
+total: n=34, mean 14.73s, median 13.30s, p90 22.34s, max 26.55s
+
+6E1PD:
+xpu2: n=5, mean 15.70s, median 15.60s, p90 19.11s, max 19.21s
+xpu3: n=2, mean 13.56s, median 13.56s, p90 18.13s, max 19.28s
+xpu4: n=7, mean  9.84s, median  8.62s, p90 13.46s, max 13.54s
+xpu5: n=7, mean 13.39s, median 13.37s, p90 16.13s, max 16.80s
+xpu6: n=7, mean 14.14s, median 13.45s, p90 19.00s, max 22.20s
+xpu7: n=6, mean 11.69s, median 12.80s, p90 13.43s, max 13.45s
+total: n=34, mean 12.86s, median 13.12s, p90 18.34s, max 22.20s
+```
+
+Comparison against earlier B70 `3E1PD` cards `0,1,7`:
+
+```text
+3E1PD B70: duration 91.23s, throughput 0.35 req/s,
+           mean TTFT 18.78s, mean E2E 20.58s,
+           encoder mean 19.94s, p90 30.92s
+
+4E1PD B70: duration 71.39s, throughput 0.45 req/s,
+           mean TTFT 13.72s, mean E2E 15.26s,
+           encoder mean 14.73s, p90 22.34s
+
+6E1PD B70: duration 61.45s, throughput 0.52 req/s,
+           mean TTFT 11.86s, mean E2E 13.44s,
+           encoder mean 12.86s, p90 18.34s
+```
+
+Scaling from `3E1PD` to `4E1PD` reduced duration by about `22%`, mean TTFT by
+about `27%`, and mean E2E by about `26%`. Scaling from `3E1PD` to `6E1PD`
+reduced duration by about `33%`, mean TTFT by about `37%`, and mean E2E by
+about `35%`. Routing was still uneven, especially in `6E1PD`
+(`xpu3` only saw two routed requests while `xpu4/5/6` each saw seven), but the
+extra encoders still reduced queueing and improved p90 encoder time.
+
+Comparison against H200 `1AGG` and H200 `3E1PD` SGLang + Dynamo baselines:
+
+```text
+H200 1AGG:       duration 68.59s, throughput 0.47 req/s,
+                 mean TTFT 10.37s, mean E2E 14.16s
+
+B70 4E1PD:       duration 71.39s, throughput 0.45 req/s,
+                 mean TTFT 13.72s, mean E2E 15.26s
+
+B70 6E1PD:       duration 61.45s, throughput 0.52 req/s,
+                 mean TTFT 11.86s, mean E2E 13.44s
+
+H200 3E1PD:      duration 49.39s, throughput 0.65 req/s,
+                 mean TTFT  5.57s, mean E2E  8.10s
+```
+
+Interpretation: with six B70 encoders, XPU E/PD finally beats the single H200
+`1AGG` baseline on total duration, throughput, and mean E2E for this image-count
+4, output-len 16 workload. It still has worse TTFT than `1AGG`, and it remains
+well behind H200 encoder disaggregation. The main remaining gap is B70 encoder
+service time: B70 `6E1PD` encoder mean was `12.86s`, while H200 `3E1PD` encoder
+mean was `7.62s` on the same workload.
+
+Post-run checks found no remaining harness processes on the H200 container and
+no `harness_b70_enc` container on the B70 host. B70 cards `2,3,4,5,6,7`
+returned to idle memory around `210-211 MiB`.
+
+### Operational note - alternate B70 host image compatibility
+
+An attempted run on `sc09intel03-b70.sc.intel.com` did not complete because the
+host did not have `hm_dynamo_b70_pr26460:latest`. Its local
+`main_dockerfile.dynamo_xpu:379-ab034dc` image had `dynamo.sglang` and SGLang
+paths, but encoder startup failed after logging `Using xpu_attn as multimodal
+attention backend` with:
+
+```text
+KeyError: 'xpu_attn'
+```
+
+The failure came from `QKV_BACKEND_IMPL[qkv_backend]`, meaning that image did
+not have the XPU QKV backend registration expected by the current InternVL
+patches. If `sc09intel03-b70` is needed later, first copy/load
+`hm_dynamo_b70_pr26460:latest` from B60 or find another image that both has
+`dynamo.sglang` and registers the `xpu_attn` QKV backend.

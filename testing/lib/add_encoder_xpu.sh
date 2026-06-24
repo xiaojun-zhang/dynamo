@@ -39,6 +39,8 @@ ENC_EXTRA_ARGS="${ENC_EXTRA_ARGS:-}"
 XPU_APPLY_PATCHES="${XPU_APPLY_PATCHES:-0}"
 XPU_PATCH_SERVER_ARGS="${XPU_PATCH_SERVER_ARGS:-0}"
 XPU_PATCH_DIR="${XPU_PATCH_DIR:-/home/h-zheng/robin/dynamo/testing/container_patch_work}"
+XPU_INSTALL_SGL_KERNEL_XPU="${XPU_INSTALL_SGL_KERNEL_XPU:-0}"
+XPU_SGL_KERNEL_XPU_REPO="${XPU_SGL_KERNEL_XPU_REPO:-https://github.com/sgl-project/sgl-kernel-xpu}"
 SIDE_CHANNEL_BASE="${SIDE_CHANNEL_BASE:-20099}"
 KV_EVENT_BASE="${KV_EVENT_BASE:-22090}"
 SYS_PORT_BASE="${SYS_PORT_BASE:-8091}"
@@ -133,6 +135,23 @@ echo "[xpu] use-sglang-tokenizer = $USE_SGLANG_TOKENIZER"
 
 SGLANG_TOKENIZER_ARG=""
 [ "$USE_SGLANG_TOKENIZER" = "1" ] && SGLANG_TOKENIZER_ARG="--use-sglang-tokenizer"
+
+if [ "$XPU_INSTALL_SGL_KERNEL_XPU" = "1" ]; then
+    echo "[xpu] installing latest sgl-kernel-xpu from $XPU_SGL_KERNEL_XPU_REPO"
+    "${SSH[@]}" "docker exec $XPU_CONTAINER bash -lc '\
+        set -e
+        cd /tmp
+        rm -rf sgl-kernel-xpu
+        git clone $XPU_SGL_KERNEL_XPU_REPO
+        cd sgl-kernel-xpu
+        python3 -m pip uninstall -y sgl_kernel || true
+        python3 -m pip install .
+        python3 - <<PY
+import importlib.metadata
+print(\"sgl_kernel\", importlib.metadata.version(\"sgl_kernel\"))
+PY
+    '" || { echo "[xpu] sgl-kernel-xpu install failed"; exit 4; }
+fi
 
 if [ "$XPU_APPLY_PATCHES" = "1" ]; then
     echo "[xpu] applying SGLang patches from $XPU_PATCH_DIR"
