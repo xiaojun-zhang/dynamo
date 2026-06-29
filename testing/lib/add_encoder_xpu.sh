@@ -180,6 +180,18 @@ if [ "$XPU_APPLY_PATCHES" = "1" ]; then
     '" || { echo "[xpu] dynamo encode worker patch failed"; exit 4; }
     "${SSH[@]}" "docker exec $XPU_CONTAINER bash -lc '\
         set -e
+        test -f $XPU_PATCH_DIR/patch_qwen3_vl_moe_encoder_only.py
+        python3 $XPU_PATCH_DIR/patch_qwen3_vl_moe_encoder_only.py
+        python3 -m py_compile /opt/sglang/python/sglang/srt/models/qwen3_vl_moe.py
+    '" || { echo "[xpu] qwen3_vl_moe patch failed"; exit 4; }
+    "${SSH[@]}" "docker exec $XPU_CONTAINER bash -lc '\
+        set -e
+        test -f $XPU_PATCH_DIR/patch_xpu_vision_head72.py
+        python3 $XPU_PATCH_DIR/patch_xpu_vision_head72.py
+        python3 -m py_compile /opt/sglang/python/sglang/srt/layers/attention/vision.py
+    '" || { echo "[xpu] vision xpu head72 patch failed"; exit 4; }
+    "${SSH[@]}" "docker exec $XPU_CONTAINER bash -lc '\
+        set -e
         test -f $XPU_PATCH_DIR/encode_server.py
         test -f $XPU_PATCH_DIR/internvl.py
         test -f $XPU_PATCH_DIR/internvl_processor.py

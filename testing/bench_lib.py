@@ -104,6 +104,27 @@ MODELS = {
     "Qwen/Qwen3-VL-8B-Instruct": {
         "path": f"{WEKA}/models--Qwen--Qwen3-VL-8B-Instruct",
         "tp": 1, "kv": "auto", "mem_frac": 0.70},
+    "Qwen/Qwen3-VL-30B-A3B-Instruct": {
+        # Closest Qwen peer to InternVL3.5-30B-A3B. Keep the runtime knobs aligned
+        # with that matched H200/B70 run so 1AGG vs 2E1PD is directly comparable.
+        "path": f"{WEKA}/models--Qwen--Qwen3-VL-30B-A3B-Instruct",
+        "tp": 1,
+        "kv": "fp8_e4m3",
+        "mem_frac": 0.80,
+        "chunked": 65536,
+        "max_prefill_tokens": 65536,
+        "max_total_tokens": 250000,
+        "cuda_graph_max_bs": 32,
+        "max_running": 32,
+        "pd_prefill_max": 4,
+        "pd_max_running": 32,
+        "pd_mem_frac": 0.80,
+        "enc_mem_frac": 0.70,
+        "xpu_apply_patches": 1,
+        "use_sglang_tokenizer": 0,
+        "dyn_chat_processor": "sglang",
+        "router_mode": "round-robin",
+    },
     "Qwen/Qwen3-VL-32B-Instruct-FP8": {
         # On one L40S the 32B-FP8 weights take ~33 GB, leaving only ~11 GB to split
         # between KV cache and the prefill working set -- and those pull opposite
